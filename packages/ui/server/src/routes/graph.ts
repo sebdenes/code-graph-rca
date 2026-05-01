@@ -34,22 +34,6 @@ export function registerGraphRoute(
       }
       const maxSymbols = clampInt(req.query.maxSymbols, 50, 5000, DEFAULT_MAX_SYMBOLS);
 
-      const files = (
-        rec.db
-          .prepare(
-            `SELECT id, path, language, subsystem, loc FROM files
-              WHERE language != 'unparsed'
-              ORDER BY loc DESC, path ASC`,
-          )
-          .all() as Array<{
-            id: number;
-            path: string;
-            language: GraphFileNode["language"];
-            subsystem: string;
-            loc: number;
-          }>
-      ).map((r) => ({ ...r }));
-
       // Symbols ordered by exported then loc DESC so prominent symbols dominate
       // the truncation cut.
       const symbolRows = rec.db
@@ -78,6 +62,32 @@ export function registerGraphRoute(
       const truncated = symbolRows.length < totalSymbols;
 
       const symbolIds = new Set(symbolRows.map((r) => r.id));
+
+      // Only return files referenced by the symbols in scope. Returning every
+      // indexed file (athlai-full = 6903) was the actual unresponsiveness
+      // cause: Cytoscape held ~7400 nodes even when maxSymbols capped at 400,
+      // because file + folder nodes were unbounded. With this filter the file
+      // count tracks the scope, and folder nodes (synthesized client-side
+      // from file paths) follow.
+      const fileIdsInScope = new Set(symbolRows.map((r) => r.file_id));
+      const fileRows =
+        fileIdsInScope.size === 0
+          ? []
+          : (rec.db
+              .prepare(
+                `SELECT id, path, language, subsystem, loc FROM files
+                  WHERE language != 'unparsed'
+                    AND id IN (${[...fileIdsInScope].map(() => "?").join(",")})
+                  ORDER BY loc DESC, path ASC`,
+              )
+              .all(...fileIdsInScope) as Array<{
+                id: number;
+                path: string;
+                language: GraphFileNode["language"];
+                subsystem: string;
+                loc: number;
+              }>);
+      const files = fileRows.map((r) => ({ ...r }));
       const filesById = new Map(files.map((f) => [f.id, f.path]));
 
       const symbols: GraphSymbolNode[] = symbolRows.map((r) => ({
