@@ -33,7 +33,9 @@ export function buildElements(
     file: anchorFile,
     line: anchorCandidate?.line ?? null,
     role: "anchor",
-    kind: "function",
+    kind: candKindOrInfer(anchorCandidate, anchorName),
+    loc: anchorCandidate?.loc ?? undefined,
+    subsystem: anchorCandidate?.subsystem ?? null,
     score: anchorCandidate?.score ?? 0,
     rationale: anchorCandidate?.rationale ?? "Anchor symbol for RCA",
     isAnchor: true,
@@ -57,7 +59,9 @@ export function buildElements(
         file: c.file,
         line: c.line,
         role: c.role,
-        kind: "function",
+        kind: candKindOrInfer(c, c.name),
+        loc: c.loc ?? undefined,
+        subsystem: c.subsystem ?? null,
         score: c.score,
         rationale: c.rationale,
         isAnchor: false,
@@ -78,8 +82,8 @@ interface NodeInput {
   score: number;
   rationale: string;
   isAnchor: boolean;
-  loc?: number;
-  subsystem?: string | null;
+  loc?: number | undefined;
+  subsystem?: string | null | undefined;
 }
 
 function upsertNode(map: Map<string, ElementDefinition>, n: NodeInput): void {
@@ -128,7 +132,10 @@ function walkCallers(
       file: c.file,
       line: c.line,
       role: "caller",
-      kind: inferKindFromName(c.name),
+      // Prefer real kind/loc/subsystem from the candidate; fall back to name-shape inference only when out of scope.
+      kind: candKindOrInfer(cand, c.name),
+      loc: cand?.loc ?? undefined,
+      subsystem: cand?.subsystem ?? null,
       score: cand?.score ?? 0,
       rationale: cand?.rationale ?? `Caller of ${parentName}`,
       isAnchor: false,
@@ -159,7 +166,9 @@ function walkCallees(
       file: c.file,
       line: c.line,
       role: "callee",
-      kind: inferKindFromName(c.name),
+      kind: candKindOrInfer(cand, c.name),
+      loc: cand?.loc ?? undefined,
+      subsystem: cand?.subsystem ?? null,
       score: cand?.score ?? 0,
       rationale: cand?.rationale ?? (c.resolved ? `Callee of ${parentName}` : `Unresolved call from ${parentName}`),
       isAnchor: false,
@@ -183,6 +192,20 @@ function makeEdge(source: string, target: string, confidence: number, resolved: 
       style: confidence < 1 || !resolved ? "dashed" : "solid",
     },
   };
+}
+
+function candKindOrInfer(
+  cand: RcaSnapshot["causalCandidates"][number] | undefined,
+  name: string,
+): "function" | "method" | "class" {
+  // CausalCandidate now carries the real kind from the indexed graph. Map the
+  // full SymbolKind union down to the three node shapes Cytoscape distinguishes.
+  if (cand?.kind) {
+    if (cand.kind === "method") return "method";
+    if (cand.kind === "class" || cand.kind === "interface") return "class";
+    return "function";
+  }
+  return inferKindFromName(name);
 }
 
 function inferKindFromName(name: string): "function" | "method" | "class" {

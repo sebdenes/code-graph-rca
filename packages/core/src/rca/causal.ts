@@ -6,6 +6,7 @@ import type {
   CalleeTree,
   CausalCandidate,
   RecentChange,
+  SymbolKind,
 } from "../types.js";
 
 /**
@@ -84,14 +85,18 @@ export function buildCausalChain(
   // 1. Collect candidates: anchor + callers (depth<=2) + callees (depth<=2), deduped.
   const candidates = collectCandidates(input);
 
-  // 2. Per-candidate ambiguity & subsystem lookup from Db (single-shot per candidate).
+  // 2. Per-candidate ambiguity, kind, loc, subsystem lookup (single-shot per candidate).
   const ambiguityByKey = new Map<string, string[]>();
   const subsystemByKey = new Map<string, string | null>();
+  const kindByKey = new Map<string, SymbolKind | null>();
+  const locByKey = new Map<string, number | null>();
   for (const c of candidates) {
     const lookup = lookupSymbolMeta(input.db, c.name, c.file);
     ambiguityByKey.set(c.key, lookup.unresolvedTargets);
     if (c.subsystem === null) subsystemByKey.set(c.key, lookup.subsystem);
     else subsystemByKey.set(c.key, c.subsystem);
+    kindByKey.set(c.key, lookup.kind);
+    locByKey.set(c.key, lookup.loc);
   }
 
   // 3. Co-change clusters: shas appearing on >=2 candidates within recencyDays.
@@ -143,6 +148,9 @@ export function buildCausalChain(
       name: c.name,
       file: c.file,
       line: c.line,
+      kind: kindByKey.get(c.key) ?? null,
+      loc: locByKey.get(c.key) ?? null,
+      subsystem: candidateSubsystem,
       role: c.role,
       distance: c.distance,
       score,
@@ -385,6 +393,8 @@ function shortSha(sha: string): string {
 interface SymbolMeta {
   unresolvedTargets: string[];
   subsystem: string | null;
+  kind: SymbolKind | null;
+  loc: number | null;
 }
 
 function lookupSymbolMeta(
@@ -393,29 +403,34 @@ function lookupSymbolMeta(
   file: string | null,
 ): SymbolMeta {
   // Find the symbol id(s). Prefer file match if file is known.
+  type Row = { id: number; subsystem: string; kind: SymbolKind; start_line: number; end_line: number };
   try {
-    let rows: Array<{ id: number; subsystem: string }>;
+    let rows: Row[];
     if (file !== null) {
       rows = db
         .prepare(
-          `SELECT s.id AS id, f.subsystem AS subsystem
+          `SELECT s.id AS id, f.subsystem AS subsystem, s.kind AS kind,
+                  s.start_line AS start_line, s.end_line AS end_line
              FROM symbols s
              JOIN files f ON f.id = s.file_id
             WHERE s.name = ? AND f.path = ?`,
         )
-        .all(name, file) as Array<{ id: number; subsystem: string }>;
+        .all(name, file) as Row[];
     } else {
       rows = db
         .prepare(
-          `SELECT s.id AS id, f.subsystem AS subsystem
+          `SELECT s.id AS id, f.subsystem AS subsystem, s.kind AS kind,
+                  s.start_line AS start_line, s.end_line AS end_line
              FROM symbols s
              JOIN files f ON f.id = s.file_id
             WHERE s.name = ?`,
         )
-        .all(name) as Array<{ id: number; subsystem: string }>;
+        .all(name) as Row[];
     }
 
-    if (rows.length === 0) return { unresolvedTargets: [], subsystem: null };
+    if (rows.length === 0) {
+      return { unresolvedTargets: [], subsystem: null, kind: null, loc: null };
+    }
 
     const ids = rows.map((r) => r.id);
     const placeholders = ids.map(() => "?").join(",");
@@ -430,9 +445,10 @@ function lookupSymbolMeta(
     const targets = [...new Set(unresolved.map((r) => r.to_name))];
     targets.sort();
 
-    const firstSubsystem = rows[0]?.subsystem ?? null;
-    return { unresolvedTargets: targets, subsystem: firstSubsystem };
+    const first = rows[0]!;
+    const loc = first.end_line - first.start_line + 1;
+    return { unresolvedTargets: targets, subsystem: first.subsystem, kind: first.kind, loc };
   } catch {
-    return { unresolvedTargets: [], subsystem: null };
+    return { unresolvedTargets: [], subsystem: null, kind: null, loc: null };
   }
 }

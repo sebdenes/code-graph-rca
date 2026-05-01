@@ -147,6 +147,12 @@ export interface CausalCandidate {
   name: string;
   file: string | null;
   line: number | null;
+  /** Symbol kind from the indexed graph; null when out of scope. */
+  kind: SymbolKind | null;
+  /** Symbol body length in lines (end_line - start_line + 1); null when unknown. */
+  loc: number | null;
+  /** Subsystem the symbol's file belongs to; null when out of scope. */
+  subsystem: string | null;
   /** Direction relative to the anchor: caller, callee, or the anchor itself. */
   role: "anchor" | "caller" | "callee";
   /** Hop distance from the anchor. 0 = anchor, 1 = direct, 2+ = transitive. */

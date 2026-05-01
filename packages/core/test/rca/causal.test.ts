@@ -116,6 +116,12 @@ describe("buildCausalChain", () => {
     expect(cC!.score).toBeGreaterThan(cB!.score);
     // Sanity: C should be at or near the top.
     expect(out[0]?.name === "C" || out[1]?.name === "C").toBe(true);
+    // Regression: kind/loc/subsystem must be populated for in-scope candidates.
+    expect(cC!.kind).toBe("function");
+    expect(cC!.loc).toBeGreaterThan(0);
+    expect(cC!.subsystem).toBe("core");
+    expect(cByName.get("A")!.kind).toBe("function");
+    expect(cByName.get("A")!.subsystem).toBe("core");
     // Print top-N for sanity-check (will appear under `--reporter=verbose`).
     // eslint-disable-next-line no-console
     console.log(
