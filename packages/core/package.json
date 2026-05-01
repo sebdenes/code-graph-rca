@@ -26,6 +26,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^11.3.0",
     "ignore": "^6.0.2",
     "tree-sitter-wasms": "^0.1.12",

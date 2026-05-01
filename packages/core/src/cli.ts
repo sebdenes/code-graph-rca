@@ -22,6 +22,9 @@ Commands:
   callers <name>            callersOf with depth.
   callees <name>            calleesOf with depth.
   changed <name>            recentlyChangedNear — git log for symbol's lines.
+  mcp [path]                Start MCP server on stdio (default repo: cwd).
+                            Wire into Cursor / Claude Code / Cody / Cline /
+                            Continue / Windsurf / Zed via their MCP config.
   version                   Print version.
 
 <failure> formats:
@@ -243,6 +246,20 @@ async function cmdChanged(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function cmdMcp(args: ParsedArgs): Promise<number> {
+  // [path] is optional; default cwd. We resolve it eagerly so the
+  // server logs the actual repo root it'll be querying against.
+  const repoRoot = resolve(args.positional[0] ?? process.cwd());
+  // Stdio is the *expected* transport when a parent agent (Cursor, Claude
+  // Code, ...) launches us. Anything we write to stdout would corrupt the
+  // protocol stream, so log to stderr only.
+  process.stderr.write(`cgrca mcp listening on stdio  (repo: ${repoRoot})\n`);
+  // Late import keeps the cli startup fast for non-MCP invocations.
+  const { startMcpServer } = await import("./mcp/server.js");
+  await startMcpServer({ repoRoot });
+  return 0;
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   if (argv.length === 0 || argv[0] === "-h" || argv[0] === "--help") {
@@ -264,6 +281,8 @@ async function main(): Promise<number> {
       return cmdCallers(args);
     case "callees":
       return cmdCallees(args);
+    case "mcp":
+      return cmdMcp(args);
     case "changed":
       return cmdChanged(args);
     case "version":
