@@ -93,21 +93,38 @@ cgrca rca symbol:login --persist /tmp/x.sqlite --repo /path/to/repo
 cgrca-view /tmp/x.sqlite
 ```
 
-Three views, one substrate:
+Three views, one substrate.
 
-- **Graph (Constellation)** — Dense organic cloud of compact labeled nodes via cose-bilkent. Click any node to slide in a Monaco panel with the source. Causal halos glow red around bug suspects; recency rings encode 7d / 30d / 90d age.
-- **RCA** — Ranked causal candidates panel (left), failure call neighborhood (center), per-node detail (right). Score breakdown by signal: recency × proximity × ambiguity × co-change × subsystem.
-- **Impact** — "If I change X, what breaks?" Forward propagation tree, hop-grouped graph, ranked-by-risk table, "high blast radius" banner.
-- **Inspector pane** — Click a graph node → Monaco editor slides in with the file at the symbol's start line. Multi-tab (LRU cap 6). Breadcrumb: `subsystem · file · parent_class · symbol_name`.
+### 1. Graph (Constellation)
+
+Dense organic cloud of compact labeled nodes via cose-bilkent. Click any node to slide in a Monaco panel with the source. **Causal halos** glow red around bug suspects; **recency rings** encode 7d / 30d / 90d age.
+
+![Halo Constellation graph view — `resolveScope` lit with a red causal halo](docs/screenshots/01-constellation.png)
+
+### 2. RCA
+
+Ranked causal candidates panel (left), failure call neighborhood (center), per-node detail (right). Score breakdown by signal: recency × proximity × ambiguity × co-change × subsystem.
+
+![RCA tab with 5 ranked candidates and recent commits](docs/screenshots/02-rca.png)
+
+### 3. Impact
+
+"If I change X, what breaks?" Forward propagation tree, hop-grouped graph, ranked-by-risk table, "high blast radius" banner.
+
+![Impact tab with high-blast-radius banner and ranked-by-risk table](docs/screenshots/03-impact.png)
+
+### 4. Inspector pane
+
+Click a graph node → Monaco editor slides in with the file at the symbol's start line. Multi-tab (LRU cap 6). Breadcrumb at the bottom: `subsystem · file · parent_class · symbol_name`.
+
+![Constellation graph with the Monaco code inspector slid in](docs/screenshots/04-inspector.png)
 
 ### See it on a real PR
 
-The live demo of the GitHub Action path is the cgrca repo's own first PR — the bot found a real bug in itself (a duplicate listing in the "top untested callers" output). The fix shipped in v0.3.1; the bot reviewed its own fix on PR #2.
+The cgrca repo's GitHub Action posts on its own PRs. Two existing examples worth clicking:
 
-- **PR #1** (bot's first self-review, found the bug): https://github.com/sebdenes/code-graph-rca/pull/1
-- **PR #2** (bot reviewed its own fix, confirmed clean output): https://github.com/sebdenes/code-graph-rca/pull/2
-
-> Screenshots of the Constellation viewer are coming. In the meantime: clone, run `cgrca init`, generate a session with `cgrca rca symbol:foo --persist /tmp/x.sqlite`, then `cgrca-view /tmp/x.sqlite` opens the viewer in your browser. Takes 90 seconds.
+- **PR #1** (bot's first self-review — found a real bug in its own output): https://github.com/sebdenes/code-graph-rca/pull/1
+- **PR #2** (bot reviewed its own fix; confirmed the duplicate is gone): https://github.com/sebdenes/code-graph-rca/pull/2
 
 ## Architecture
 
