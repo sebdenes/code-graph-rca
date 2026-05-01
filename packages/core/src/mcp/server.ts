@@ -72,7 +72,7 @@ function asJson(value: unknown): { content: Array<{ type: "text"; text: string }
 export async function startMcpServer(opts: ServerOptions): Promise<void> {
   const server = new McpServer({
     name: "cgrca",
-    version: "0.2.0",
+    version: "0.2.1",
   });
 
   // ---- Tool: definitionOf ----

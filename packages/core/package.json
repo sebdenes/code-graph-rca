@@ -1,7 +1,7 @@
 {
   "name": "code-graph-rca",
-  "version": "0.2.0",
-  "description": "RCA-specific code knowledge graph for AI coding agents. Session-scoped, in-memory, opinionated. Ships an MCP server so any MCP-aware agent (Cursor, Claude Code, Cody, Cline, Continue, Windsurf, Zed) gets cgrca natively.",
+  "version": "0.2.1",
+  "description": "RCA infrastructure for AI-built code. Code knowledge graph + opinionated RCA engine, exposed via MCP (Cursor / Claude Code / Cody / Cline / Continue / Windsurf / Zed) plus CLI and library. RCA is the wedge; the same engine covers code review, refactor blast-radius, and grounding for any agent's structural claims.",
   "type": "module",
   "license": "MIT",
   "author": "Sebastien Denes",
