@@ -25,6 +25,8 @@ Commands:
   mcp [path]                Start MCP server on stdio (default repo: cwd).
                             Wire into Cursor / Claude Code / Cody / Cline /
                             Continue / Windsurf / Zed via their MCP config.
+  init [path]               One-shot setup: detect editor MCP configs,
+                            register cgrca, drop AGENTS.md at the repo root.
   version                   Print version.
 
 <failure> formats:
@@ -246,6 +248,20 @@ async function cmdChanged(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function cmdInit(args: ParsedArgs): Promise<number> {
+  const repoRoot = resolve(args.positional[0] ?? process.cwd());
+  // The MCP server is launched via this same CLI binary. We resolve to
+  // the dist/cli.js absolute path so editor configs are stable across
+  // working-directory changes.
+  const { fileURLToPath } = await import("node:url");
+  const cliPath = fileURLToPath(import.meta.url);
+  const dryRun = args.flags["dry-run"] === true;
+  const { runInit, formatInitResult } = await import("./init/install.js");
+  const result = runInit({ cliPath, repoRoot, dryRun });
+  process.stdout.write(formatInitResult(result, cliPath, repoRoot));
+  return 0;
+}
+
 async function cmdMcp(args: ParsedArgs): Promise<number> {
   // [path] is optional; default cwd. We resolve it eagerly so the
   // server logs the actual repo root it'll be querying against.
@@ -283,6 +299,8 @@ async function main(): Promise<number> {
       return cmdCallees(args);
     case "mcp":
       return cmdMcp(args);
+    case "init":
+      return cmdInit(args);
     case "changed":
       return cmdChanged(args);
     case "version":
