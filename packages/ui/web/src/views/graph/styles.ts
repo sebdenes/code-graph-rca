@@ -53,12 +53,15 @@ export function haloColor(score: number): string {
 
 export const STYLESHEET: Stylesheet[] = [
   // Base node — small glowing dot. Color from data.color.
+  // Default labels are intentionally suppressed (empty) — labels are drawn
+  // by the SmartLabels SVG overlay so we get collision avoidance + bigger
+  // typography for the anchor.
   {
     selector: "node",
     style: {
       "background-color": "data(color)",
       "background-opacity": 0.95,
-      label: "data(label)",
+      label: "",
       "font-family": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       "font-size": 10,
       color: "#cfd6e6",
@@ -67,7 +70,7 @@ export const STYLESHEET: Stylesheet[] = [
       "text-margin-x": 8,
       "text-wrap": "ellipsis",
       "text-max-width": "180px",
-      "text-opacity": 0.55,
+      "text-opacity": 0,
       "text-outline-color": "#050810",
       "text-outline-width": 2,
       width: "data(size)",
@@ -166,7 +169,8 @@ export const STYLESHEET: Stylesheet[] = [
       "overlay-opacity": 0,
     },
   },
-  // Edges — gossamer cyan default.
+  // Edges — gossamer cyan default. Default opacity ~0.12 so the lit class
+  // (~0.85) reads as the dramatic 5–7× contrast the mockup specifies.
   {
     selector: "edge",
     style: {
@@ -202,18 +206,35 @@ export const STYLESHEET: Stylesheet[] = [
     style: { "line-color": "#42e6ff", "line-opacity": 0.35 },
   },
   // Lit edge — "ray of light" through the constellation.
+  // ~6× the default opacity + ~3× width so anchor-incident edges read as
+  // bright cyan rays against the faded baseline (mockup spec: opacity 0.78,
+  // ~5-6× brighter than non-lit). The cytoscape canvas API doesn't support
+  // edge drop-shadow, so we approximate the glow by stacking the bright
+  // edge atop a wider semi-transparent halo edge via an "anchor-lit"
+  // variant.
   {
     selector: "edge.lit",
     style: {
       "line-color": "#5cd5ff",
-      "line-opacity": 0.95,
-      width: 1.5,
+      "line-opacity": 0.78,
+      width: 1.6,
       "z-index": 20,
+    },
+  },
+  // Anchor-incident edges: a slightly wider band of the same lit treatment,
+  // simulating the glow without per-element shadow filters.
+  {
+    selector: "edge.anchor-lit",
+    style: {
+      "line-color": "#5cd5ff",
+      "line-opacity": 0.85,
+      width: 1.8,
+      "z-index": 22,
     },
   },
   {
     selector: "edge.dimmed",
-    style: { "line-opacity": 0.04 },
+    style: { "line-opacity": 0.03 },
   },
   {
     selector: "edge.hidden",

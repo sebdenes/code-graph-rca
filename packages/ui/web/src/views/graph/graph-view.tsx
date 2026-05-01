@@ -18,7 +18,8 @@
  * pick it up) AND adds the node's owning file to the pinned-tabs LRU, with
  * cap = 6.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Core } from "cytoscape";
 import { useSession } from "@/state/session.ts";
 import { useGraphData } from "./use-graph-data.ts";
 import { CyCanvas, type CyHandle } from "./cy-canvas.tsx";
@@ -26,7 +27,12 @@ import { Explorer } from "./explorer.tsx";
 import { Inspector, type PinnedFile } from "./inspector.tsx";
 import type { NodePayload } from "./build-elements.ts";
 import type { NodeKind } from "./styles.ts";
+import { NebulaLayer, computeFileClusters, type FileCluster } from "./nebula-layer.tsx";
+import { AnchorOverlay } from "./anchor-overlay.tsx";
+import { SmartLabels } from "./smart-labels.tsx";
+import type { RcaSnapshot } from "@shared/api";
 import "./graph.css";
+import "./observatory.css";
 
 const MAX_PINS = 6;
 
@@ -42,6 +48,11 @@ export function GraphView({ sessionId }: { sessionId: string }) {
   const [search, setSearch] = useState("");
   const [pins, setPins] = useState<PinnedFile[]>([]);
   const [selectedNode, setSelectedNode] = useState<NodePayload | null>(null);
+
+  // Observatory overlays — recomputed on layout settle / selection change.
+  const [cy, setCy] = useState<Core | null>(null);
+  const [clusters, setClusters] = useState<FileCluster[]>([]);
+  const [layoutVersion, setLayoutVersion] = useState(0);
 
   const { query, data } = useGraphData({ sessionId, maxSymbols });
 
@@ -92,6 +103,45 @@ export function GraphView({ sessionId }: { sessionId: string }) {
   const onHoverNode = useCallback((_n: NodePayload | null) => {
     // Hover styling is applied inside CyCanvas via cytoscape classes.
   }, []);
+
+  const onCyReady = useCallback((core: Core) => {
+    setCy(core);
+    setClusters(computeFileClusters(core));
+    setLayoutVersion((v) => v + 1);
+  }, []);
+
+  // Cytoscape id of the active anchor — the selected node, falling back to
+  // the RCA primary symbol on first paint. Recomputed when selection or RCA
+  // changes; safe to call before cy mounts (returns null in that case).
+  const anchorId = useMemo<string | null>(() => {
+    if (!cy) return null;
+    if (selectedNode) return selectedNode.id;
+    return findPrimaryAnchorId(cy, data?.rca ?? null);
+  }, [cy, selectedNode, data?.rca, layoutVersion]);
+
+  const anchorFile = useMemo<string | null>(() => {
+    if (!anchorId || !cy) return null;
+    const n = cy.getElementById(anchorId);
+    if (n.empty()) return null;
+    const f = n.data("file");
+    return typeof f === "string" ? f : null;
+  }, [cy, anchorId, layoutVersion]);
+
+  // Toggle the `.lit` class on edges incident to the anchor whenever it
+  // changes. Hover-driven `.lit` is already handled inside CyCanvas; this
+  // keeps the anchor highlighted persistently when nothing is hovered.
+  useEffect(() => {
+    if (!cy) return;
+    cy.batch(() => {
+      cy.edges().removeClass("anchor-lit");
+      if (anchorId) {
+        const node = cy.getElementById(anchorId);
+        if (!node.empty()) {
+          node.connectedEdges().addClass("anchor-lit").addClass("lit");
+        }
+      }
+    });
+  }, [cy, anchorId, layoutVersion]);
 
   const onClosePin = useCallback((id: string) => {
     setPins((prev) => prev.filter((p) => p.id !== id));
@@ -228,11 +278,14 @@ export function GraphView({ sessionId }: { sessionId: string }) {
   const nodeCount = data.symbolCount + data.fileCount;
 
   return (
-    <div className="graph-shell starfield flex h-full w-full flex-col">
+    <div className="graph-shell starfield observatory-stage flex h-full w-full flex-col">
       <TopBar
         searchRef={searchRef}
         nodeCount={nodeCount}
         edgeCount={data.edgeCount}
+        fileCount={data.fileCount}
+        symbolCount={data.symbolCount}
+        sessionId={sessionId}
         search={search}
         onSearch={setSearch}
         onSubmit={onSearchSubmit}
@@ -257,13 +310,21 @@ export function GraphView({ sessionId }: { sessionId: string }) {
           <div />
         )}
         <div className="canvas-region relative overflow-hidden">
+          {/* Order matters: nebula (z 0) → cy canvas (z 1) → anchor flare
+            * (z 5) → smart labels (z 6) → caption / legend (z 8). */}
+          <NebulaLayer cy={cy} clusters={clusters} anchorFile={anchorFile} />
           <CyCanvas
             ref={cyRef}
             elements={data.elements}
             rca={data.rca}
             onSelectNode={onSelectNode}
             onHoverNode={onHoverNode}
+            onReady={onCyReady}
           />
+          <AnchorOverlay cy={cy} anchorId={anchorId} />
+          <SmartLabels cy={cy} layoutVersion={layoutVersion} anchorId={anchorId} />
+          <HypothesisCaption rca={data.rca} anchorName={anchorNameFor(cy, anchorId)} />
+          <ObservatoryLegend />
           <div className="instrument-readout pointer-events-none absolute bottom-2 right-3 select-none font-mono text-[10px] text-zinc-500/80">
             nodes {nodeCount} · edges {data.edgeCount} · scope {maxSymbols}
             {data.truncated ? <span className="ml-2 text-amber-300/80">truncated</span> : null}
@@ -274,9 +335,99 @@ export function GraphView({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** Find the cytoscape node id of the RCA primary symbol. Returns null when
+ *  there's no RCA, or when the named symbol isn't in the rendered graph. */
+function findPrimaryAnchorId(cy: Core, rca: RcaSnapshot | null): string | null {
+  if (!rca) return null;
+  const primary = rca.primarySymbol;
+  if (!primary) return null;
+  // Prefer the first causalCandidate with role "anchor" (it has file+line),
+  // then fall back to a name match.
+  const anchorCand = rca.causalCandidates.find((c) => c.role === "anchor");
+  if (anchorCand && anchorCand.file !== null && anchorCand.line !== null) {
+    let found: string | null = null;
+    cy.nodes().forEach((n) => {
+      if (found) return;
+      if (n.hasClass("halo") || n.hasClass("ring")) return;
+      const f = n.data("file");
+      const l = n.data("line");
+      const name = String(n.data("name") ?? "");
+      if (f === anchorCand.file && l === anchorCand.line && name === anchorCand.name) {
+        found = n.id();
+      }
+    });
+    if (found) return found;
+  }
+  let byName: string | null = null;
+  cy.nodes().forEach((n) => {
+    if (byName) return;
+    if (n.hasClass("halo") || n.hasClass("ring")) return;
+    if (String(n.data("name") ?? "") === primary) byName = n.id();
+  });
+  return byName;
+}
+
+function anchorNameFor(cy: Core | null, anchorId: string | null): string | null {
+  if (!cy || !anchorId) return null;
+  const n = cy.getElementById(anchorId);
+  if (n.empty()) return null;
+  const name = n.data("name");
+  return typeof name === "string" ? name : null;
+}
+
+interface HypothesisCaptionProps {
+  rca: RcaSnapshot | null;
+  anchorName: string | null;
+}
+
+function HypothesisCaption({ rca, anchorName }: HypothesisCaptionProps) {
+  if (!rca) return null;
+  const name = anchorName ?? rca.primarySymbol;
+  if (!name) return null;
+  // Pull a 2-sentence summary from firstHypothesis or the top causal candidate.
+  const sentences: string[] = [];
+  const fh = rca.firstHypothesis ?? "";
+  if (fh) {
+    const split = fh.replace(/\s+/g, " ").trim().split(/(?<=\.)\s+/);
+    for (const s of split) {
+      if (sentences.length >= 2) break;
+      if (s.length > 0) sentences.push(s);
+    }
+  }
+  if (sentences.length === 0) {
+    const top = rca.causalCandidates[0];
+    if (top) {
+      sentences.push(top.rationale);
+    }
+  }
+  if (sentences.length === 0) return null;
+  return (
+    <div className="observatory-hypothesis">
+      The most likely cause sits in <span className="anchor-name">{name}</span>.{" "}
+      {sentences.slice(0, 2).join(" ")}
+    </div>
+  );
+}
+
+function ObservatoryLegend() {
+  return (
+    <div className="observatory-legend">
+      <span className="item fn"><span className="swatch" />function</span>
+      <span className="item intf"><span className="swatch" />interface</span>
+      <span className="item cn"><span className="swatch" />const</span>
+      <span className="item tp"><span className="swatch" />type</span>
+      <span className="item anch"><span className="swatch" />anchor</span>
+      <span className="scale">— solid 1.0  - - dashed 0.7  · · dotted 0.5</span>
+    </div>
+  );
+}
+
 interface TopBarProps {
   nodeCount: number;
   edgeCount: number;
+  fileCount: number;
+  symbolCount: number;
+  sessionId: string;
   search: string;
   onSearch: (s: string) => void;
   onSubmit: () => void;
@@ -284,9 +435,16 @@ interface TopBarProps {
 }
 
 function TopBar(props: TopBarProps) {
-  const { nodeCount, edgeCount, search, onSearch, onSubmit, searchRef } = props;
+  const { nodeCount, edgeCount, fileCount, symbolCount, sessionId, search, onSearch, onSubmit, searchRef } = props;
   return (
     <header className="constellation-topbar flex shrink-0 items-center gap-3 px-4 py-2 text-sm">
+      <div className="brand-halo">Halo<span className="dot" /></div>
+      <div className="session-info">
+        <span>session · <strong>{sessionId}</strong></span>
+        <span>{fileCount} files</span>
+        <span>{symbolCount} symbols</span>
+        <span>{edgeCount} edges</span>
+      </div>
       <div className="mx-auto flex items-center gap-2">
         <input
           ref={searchRef}

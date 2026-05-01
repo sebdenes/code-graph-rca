@@ -47,13 +47,16 @@
   z-index: 1;
 }
 
-/* Cytoscape host is transparent so the starfield shows through. */
+/* Cytoscape host is transparent so the starfield + nebula layer show
+ * through. z-index 1 places it above the nebula (z 0) but below the
+ * anchor flare / smart labels overlays (z 5/6). */
 .cy-host {
   width: 100%;
   height: 100%;
   position: absolute;
   inset: 0;
   background: transparent;
+  z-index: 1;
 }
 
 .canvas-region {

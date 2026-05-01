@@ -104,6 +104,8 @@ export interface CyHandle {
   setSearch: (q: string) => void;
   firstMatch: (q: string) => NodePayload | null;
   fit: () => void;
+  /** Underlying cytoscape Core. Returns null until the canvas has mounted. */
+  getCy: () => Core | null;
 }
 
 interface Props {
@@ -112,6 +114,12 @@ interface Props {
   rca: RcaSnapshot | null;
   onSelectNode: (data: NodePayload) => void;
   onHoverNode: (data: NodePayload | null) => void;
+  /** Fires when cytoscape, the elements, or the layout settle. Overlays use
+   * this to recompute centroids + label collision. */
+  onReady?: (cy: Core) => void;
+  /** Fires when the visible-node set changes (selection, filter, search) so
+   * overlays can recompute their cached layout (centroids/labels). */
+  onSelectionChange?: (selectedId: string | null) => void;
 }
 
 interface OverlayMaps {
@@ -242,8 +250,12 @@ export const CyCanvas = forwardRef<CyHandle, Props>(function CyCanvas(props, ref
   const overlaysRef = useRef<OverlayMaps>({ halo: new Map(), ring: new Map() });
   const onSelect = useRef(props.onSelectNode);
   const onHover = useRef(props.onHoverNode);
+  const onReady = useRef(props.onReady);
+  const onSelectionChange = useRef(props.onSelectionChange);
   onSelect.current = props.onSelectNode;
   onHover.current = props.onHoverNode;
+  onReady.current = props.onReady;
+  onSelectionChange.current = props.onSelectionChange;
 
   const elementsRef = useRef(props.elements);
   elementsRef.current = props.elements;
@@ -269,7 +281,10 @@ export const CyCanvas = forwardRef<CyHandle, Props>(function CyCanvas(props, ref
 
     // Add halo + ring overlay nodes, then promote in background.
     overlaysRef.current = makeOverlays(cy, rcaRef.current);
-    schedulePromotion(cy, overlaysRef.current);
+    // Fire ready immediately for the concentric layout (overlays can render);
+    // the cose-bilkent promotion will fire ready again when it settles.
+    onReady.current?.(cy);
+    schedulePromotion(cy, overlaysRef.current, () => onReady.current?.(cy));
 
     cy.on("tap", "node", (evt: EventObject) => {
       const n = evt.target as NodeSingular;
@@ -279,10 +294,12 @@ export const CyCanvas = forwardRef<CyHandle, Props>(function CyCanvas(props, ref
       cy.nodes().removeClass("selected");
       n.addClass("selected");
       onSelect.current(data);
+      onSelectionChange.current?.(n.id());
     });
     cy.on("tap", (evt: EventObject) => {
       if (evt.target === cy) {
         cy.nodes().removeClass("selected");
+        onSelectionChange.current?.(null);
       }
     });
     cy.on("mouseover", "node", (evt: EventObject) => {
@@ -366,7 +383,8 @@ export const CyCanvas = forwardRef<CyHandle, Props>(function CyCanvas(props, ref
     cy.layout(CONCENTRIC_LAYOUT).run();
     overlaysRef.current = makeOverlays(cy, props.rca);
     syncOverlayPositions(cy, overlaysRef.current);
-    schedulePromotion(cy, overlaysRef.current);
+    onReady.current?.(cy);
+    schedulePromotion(cy, overlaysRef.current, () => onReady.current?.(cy));
   }, [props.elements, props.rca]);
 
   useImperativeHandle(
@@ -448,6 +466,7 @@ export const CyCanvas = forwardRef<CyHandle, Props>(function CyCanvas(props, ref
         cy.resize();
         cy.fit(undefined, 30);
       },
+      getCy: () => cyRef.current,
     }),
     [],
   );
@@ -456,7 +475,11 @@ export const CyCanvas = forwardRef<CyHandle, Props>(function CyCanvas(props, ref
 });
 
 /** Defer cose-bilkent to idle; guard with a 4s wall-clock to prevent freeze. */
-function schedulePromotion(cy: Core, overlays: OverlayMaps): void {
+function schedulePromotion(
+  cy: Core,
+  overlays: OverlayMaps,
+  onSettled?: () => void,
+): void {
   const idle = (cb: () => void): number => {
     type RIC = (cb: IdleRequestCallback, opts?: IdleRequestOptions) => number;
     const ric: RIC | undefined = (window as unknown as { requestIdleCallback?: RIC })
@@ -499,6 +522,7 @@ function schedulePromotion(cy: Core, overlays: OverlayMaps): void {
       if (!cy.destroyed()) {
         syncOverlayPositions(cy, overlays);
         cy.fit(undefined, 30);
+        onSettled?.();
       }
     });
 

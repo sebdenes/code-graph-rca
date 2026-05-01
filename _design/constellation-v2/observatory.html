@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Halo · Constellation v2 · Observatory</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.8.5/dist/d3.min.js"></script>
+  <style>
+    /*
+     * Halo · Constellation v2 (Observatory).
+     *
+     * Design philosophy: a real planetarium plate, not "dark theme + dots".
+     *  - Subsystem nebulas (soft glowing clouds) carry the file groups —
+     *    you can SEE the codebase has structure, not just nodes.
+     *  - Star magnitude (size + brightness) does its job: exported public
+     *    surface area is bigger and brighter than internal helpers.
+     *  - Named constellations: each file is labeled in elegant italic serif
+     *    at the cluster edge, opacity 0.4 so it reads as cartography, not chrome.
+     *  - The anchor gets a layered treatment (halo + 4-cross lens flare +
+     *    concentric pulse rings) — earned drama, not decoration.
+     *  - Edge weave reads confidence: solid (1.0) / dashed (0.7) / dotted (0.5).
+     *  - Background: deep navy with subtle film grain noise. Far stars scatter
+     *    at low opacity, hand-placed so they don't compete with the cluster.
+     *
+     * Anti-slop checks:
+     *  - No purple gradient. Brand navy + warm subsystem hues only.
+     *  - No emoji icons. No rounded-card-with-left-border-accent.
+     *  - No SVG-drawn human figures. Stars are stars.
+     *  - Labels do not collide — D3 force collision + selective rendering.
+     */
+
+    :root {
+      --bg-top: #0c1325;
+      --bg-bottom: #050810;
+
+      --ink: #f5f5f5;
+      --ink-mute: rgba(245, 245, 245, 0.55);
+      --ink-faint: rgba(245, 245, 245, 0.32);
+      --ink-ghost: rgba(245, 245, 245, 0.16);
+
+      /* Star palette — node fills by kind. Same as production styles.ts. */
+      --star-function:  #7aa8ff;
+      --star-method:    #c084fc;
+      --star-class:     #ffb547;
+      --star-interface: #42e6ff;
+      --star-const:     #5dd699;
+      --star-enum:      #ff6b8b;
+      --star-type:      #ff8fc4;
+
+      /* Subsystem (file) nebula hues — handpicked so they don't clash
+         with the kind palette. Saturated low, big radii. */
+      --nebula-scope:   240 80% 30%;   /* deep cobalt for scope.ts (anchor file) */
+      --nebula-walker:  150 50% 30%;   /* moss for walker.ts */
+      --nebula-runner:  280 50% 32%;   /* aubergine for runner.ts */
+      --nebula-types:   30 60% 32%;    /* amber for types.ts */
+
+      --edge: #7aa8ff;
+      --halo-red: #ff5c6a;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 1920px; height: 1080px; overflow: hidden; }
+    body {
+      background:
+        radial-gradient(circle at 50% 50%, rgba(122,168,255,0.04), transparent 60%),
+        linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+      color: var(--ink);
+      font-family: "Newsreader", Georgia, serif;
+      position: relative;
+    }
+
+    /* Film grain — adds analog warmth without becoming visible noise. */
+    body::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' /></filter><rect width='200' height='200' filter='url(%23n)' opacity='0.5'/></svg>");
+      opacity: 0.035;
+      pointer-events: none;
+      mix-blend-mode: overlay;
+    }
+
+    /* Faint background star field — hand-placed dots far from cluster. */
+    body::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        radial-gradient(1px 1px at 4% 14%, rgba(255,255,255,0.5), transparent),
+        radial-gradient(1px 1px at 96% 22%, rgba(255,255,255,0.35), transparent),
+        radial-gradient(1px 1px at 8% 78%, rgba(255,255,255,0.45), transparent),
+        radial-gradient(1px 1px at 92% 88%, rgba(255,255,255,0.3), transparent),
+        radial-gradient(1.5px 1.5px at 50% 4%, rgba(255,255,255,0.4), transparent),
+        radial-gradient(1px 1px at 12% 50%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 88% 56%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 30% 96%, rgba(255,255,255,0.3), transparent),
+        radial-gradient(1px 1px at 70% 6%, rgba(255,255,255,0.32), transparent),
+        radial-gradient(1px 1px at 36% 18%, rgba(255,255,255,0.2), transparent),
+        radial-gradient(1px 1px at 64% 92%, rgba(255,255,255,0.22), transparent);
+      pointer-events: none;
+      opacity: 0.7;
+    }
+
+    .stage {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ---- Top chrome ---- */
+    .topbar {
+      position: absolute;
+      top: 32px;
+      left: 48px;
+      right: 48px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      z-index: 10;
+    }
+    .brand {
+      font-family: "Newsreader", serif;
+      font-style: italic;
+      font-weight: 400;
+      font-size: 24px;
+      letter-spacing: -0.02em;
+      text-transform: none;
+      color: var(--ink);
+    }
+    .brand .dot {
+      display: inline-block;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--halo-red);
+      box-shadow: 0 0 8px rgba(255,92,106,0.7);
+      margin-left: 4px;
+      vertical-align: super;
+      transform: translateY(-10px);
+    }
+
+    .session-info {
+      display: flex;
+      gap: 24px;
+    }
+    .session-info > * { color: var(--ink-mute); }
+    .session-info strong { color: var(--ink); font-weight: 500; }
+
+    /* ---- Bottom chrome / legend ---- */
+    .legend {
+      position: absolute;
+      left: 48px;
+      bottom: 36px;
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      z-index: 10;
+    }
+    .legend .item { display: inline-flex; align-items: center; gap: 8px; }
+    .legend .swatch {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      box-shadow: 0 0 6px currentColor;
+    }
+    .legend .item.fn   .swatch { background: var(--star-function); color: var(--star-function); }
+    .legend .item.intf .swatch { background: var(--star-interface); color: var(--star-interface); }
+    .legend .item.cn   .swatch { background: var(--star-const); color: var(--star-const); }
+    .legend .item.tp   .swatch { background: var(--star-type); color: var(--star-type); }
+    .legend .item.anch .swatch {
+      background: transparent;
+      border: 1.5px solid var(--halo-red);
+      box-shadow: 0 0 8px rgba(255,92,106,0.6);
+    }
+
+    .scale {
+      position: absolute;
+      right: 48px;
+      bottom: 36px;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      text-align: right;
+      z-index: 10;
+    }
+    .scale .stat { color: var(--ink); font-weight: 500; }
+
+    /* ---- Caption / hypothesis ---- */
+    .hypothesis {
+      position: absolute;
+      top: 88px;
+      left: 48px;
+      max-width: 360px;
+      font-family: "Newsreader", serif;
+      font-size: 16px;
+      line-height: 1.55;
+      color: var(--ink-mute);
+      z-index: 10;
+    }
+    .hypothesis .anchor-name {
+      color: var(--halo-red);
+      font-style: italic;
+      font-weight: 400;
+    }
+    .hypothesis em {
+      color: var(--ink);
+      font-style: italic;
+    }
+
+    /* ---- SVG graph ---- */
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .nebula {
+      mix-blend-mode: screen;
+      filter: blur(40px);
+      opacity: 0.42;
+    }
+
+    .nebula-core {
+      mix-blend-mode: screen;
+      filter: blur(80px);
+      opacity: 0.55;
+    }
+
+    .constellation-line {
+      stroke: var(--ink-ghost);
+      stroke-width: 0.6;
+      fill: none;
+      opacity: 0.35;
+    }
+
+    .edge {
+      fill: none;
+      stroke: var(--edge);
+      stroke-width: 0.8;
+    }
+    .edge.solid  { stroke-dasharray: none; opacity: 0.18; }
+    .edge.dashed { stroke-dasharray: 4 3;  opacity: 0.16; }
+    .edge.dotted { stroke-dasharray: 1 3;  opacity: 0.14; }
+
+    .edge.anchor-incident {
+      stroke: #5cd5ff;
+      stroke-width: 1.4;
+      opacity: 0.78;
+      filter: drop-shadow(0 0 4px rgba(92,213,255,0.5));
+    }
+
+    .star {
+      paint-order: stroke;
+      stroke-width: 0;
+      transition: opacity 0.2s;
+    }
+    .star.dim { opacity: 0.55; }
+    .star.exported { filter: drop-shadow(0 0 4px currentColor); }
+
+    .star-label {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 10px;
+      fill: rgba(245,245,245,0.62);
+      paint-order: stroke;
+      stroke: rgba(5,8,16,0.85);
+      stroke-width: 3;
+      stroke-linejoin: round;
+      pointer-events: none;
+    }
+
+    .star-label.anchor {
+      fill: #ffd1d6;
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+    }
+
+    .file-label {
+      font-family: "Newsreader", serif;
+      font-style: italic;
+      font-size: 26px;
+      letter-spacing: -0.005em;
+      fill: rgba(245,245,245,0.42);
+      pointer-events: none;
+    }
+    .file-label.small {
+      font-size: 18px;
+    }
+
+    /* Anchor — the fully decorated treatment. */
+    .anchor-halo-outer {
+      fill: url(#halo-gradient-outer);
+    }
+    .anchor-halo-inner {
+      fill: url(#halo-gradient-inner);
+    }
+    .anchor-flare {
+      stroke: rgba(255,92,106,0.5);
+      stroke-width: 1.2;
+      opacity: 0.7;
+    }
+    .anchor-ring {
+      fill: none;
+      stroke: var(--halo-red);
+      stroke-width: 1;
+      opacity: 0.55;
+    }
+    .anchor-ring.outer { opacity: 0.18; stroke-width: 0.8; }
+
+  </style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="topbar">
+    <div class="brand">Halo<span class="dot"></span></div>
+    <div class="session-info">
+      <span>session · <strong>self-resolveScope</strong></span>
+      <span>4 files</span>
+      <span>58 symbols</span>
+      <span>264 edges</span>
+    </div>
+  </div>
+
+  <div class="hypothesis">
+    The most likely cause sits in
+    <span class="anchor-name">resolveScope</span>
+    — anchor of the failure neighborhood, modified <em>0 days ago</em>
+    in commit <em>75b292a</em>, with 4 directly co-changed callees.
+  </div>
+
+  <svg id="graph" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <radialGradient id="halo-gradient-outer">
+        <stop offset="0%"  stop-color="rgba(255,92,106,0.55)"/>
+        <stop offset="40%" stop-color="rgba(255,92,106,0.22)"/>
+        <stop offset="80%" stop-color="rgba(255,92,106,0.05)"/>
+        <stop offset="100%" stop-color="rgba(255,92,106,0)"/>
+      </radialGradient>
+      <radialGradient id="halo-gradient-inner">
+        <stop offset="0%"  stop-color="rgba(255,140,150,0.85)"/>
+        <stop offset="60%" stop-color="rgba(255,92,106,0.35)"/>
+        <stop offset="100%" stop-color="rgba(255,92,106,0)"/>
+      </radialGradient>
+
+      <radialGradient id="nebula-scope">
+        <stop offset="0%"  stop-color="hsla(240, 80%, 50%, 0.7)"/>
+        <stop offset="60%" stop-color="hsla(240, 70%, 35%, 0.18)"/>
+        <stop offset="100%" stop-color="hsla(240, 80%, 30%, 0)"/>
+      </radialGradient>
+      <radialGradient id="nebula-walker">
+        <stop offset="0%"  stop-color="hsla(150, 60%, 45%, 0.5)"/>
+        <stop offset="60%" stop-color="hsla(150, 55%, 32%, 0.15)"/>
+        <stop offset="100%" stop-color="hsla(150, 50%, 28%, 0)"/>
+      </radialGradient>
+      <radialGradient id="nebula-runner">
+        <stop offset="0%"  stop-color="hsla(280, 60%, 48%, 0.55)"/>
+        <stop offset="60%" stop-color="hsla(280, 55%, 35%, 0.16)"/>
+        <stop offset="100%" stop-color="hsla(280, 50%, 30%, 0)"/>
+      </radialGradient>
+      <radialGradient id="nebula-types">
+        <stop offset="0%"  stop-color="hsla(30, 70%, 50%, 0.5)"/>
+        <stop offset="60%" stop-color="hsla(30, 60%, 35%, 0.15)"/>
+        <stop offset="100%" stop-color="hsla(30, 60%, 30%, 0)"/>
+      </radialGradient>
+    </defs>
+
+    <g class="nebula-layer"></g>
+    <g class="constellation-layer"></g>
+    <g class="edge-layer"></g>
+    <g class="anchor-layer"></g>
+    <g class="star-layer"></g>
+    <g class="label-layer"></g>
+    <g class="file-label-layer"></g>
+  </svg>
+
+  <div class="legend">
+    <span class="item fn"><span class="swatch"></span>function</span>
+    <span class="item intf"><span class="swatch"></span>interface</span>
+    <span class="item cn"><span class="swatch"></span>const</span>
+    <span class="item tp"><span class="swatch"></span>type</span>
+    <span class="item anch"><span class="swatch"></span>anchor / suspect</span>
+  </div>
+
+  <div class="scale">
+    <div>edges &nbsp;<span class="stat">— solid 1.0  - - dashed 0.7  · · dotted 0.5</span></div>
+    <div style="margin-top:6px;">brightness ∝ exported · size ∝ LOC × degree</div>
+  </div>
+
+</div>
+
+<script type="module">
+//─── DATA ───────────────────────────────────────────────────────────────
+const SYMBOLS = [{"id": 1, "name": "ScopeBudget", "kind": "interface", "start_line": 11, "end_line": 15, "exported": 1, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 2, "name": "ResolvedScope", "kind": "interface", "start_line": 17, "end_line": 23, "exported": 1, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 3, "name": "PkgEntry", "kind": "interface", "start_line": 42, "end_line": 42, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 4, "name": "FailureScope", "kind": "type", "start_line": 5, "end_line": 9, "exported": 1, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 5, "name": "toPosix", "kind": "const", "start_line": 37, "end_line": 37, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 6, "name": "isParseable", "kind": "const", "start_line": 38, "end_line": 38, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 7, "name": "safeRead", "kind": "const", "start_line": 39, "end_line": 39, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 8, "name": "safeSize", "kind": "const", "start_line": 40, "end_line": 40, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 9, "name": "scanRepo", "kind": "function", "start_line": 44, "end_line": 93, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 10, "name": "visit", "kind": "const", "start_line": 53, "end_line": 78, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 11, "name": "tryFiles", "kind": "function", "start_line": 95, "end_line": 101, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 12, "name": "resolveRelative", "kind": "function", "start_line": 103, "end_line": 124, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 13, "name": "resolvePackage", "kind": "function", "start_line": 126, "end_line": 140, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 14, "name": "extractImports", "kind": "function", "start_line": 142, "end_line": 155, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 15, "name": "resolveAbsolutePy", "kind": "function", "start_line": 157, "end_line": 175, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 16, "name": "resolveSpec", "kind": "function", "start_line": 177, "end_line": 188, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 17, "name": "parseStack", "kind": "function", "start_line": 190, "end_line": 214, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 18, "name": "toRepoRel", "kind": "function", "start_line": 216, "end_line": 227, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 19, "name": "findSymbolFiles", "kind": "function", "start_line": 229, "end_line": 237, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 20, "name": "findCallers", "kind": "function", "start_line": 239, "end_line": 258, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 21, "name": "resolveScope", "kind": "function", "start_line": 260, "end_line": 350, "exported": 1, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 22, "name": "addFile", "kind": "const", "start_line": 309, "end_line": 317, "exported": 0, "file": "src/graph/scope.ts", "subsystem": "src"}, {"id": 23, "name": "DiscoveredFile", "kind": "interface", "start_line": 29, "end_line": 33, "exported": 1, "file": "src/graph/walker.ts", "subsystem": "src"}, {"id": 24, "name": "WalkOptions", "kind": "interface", "start_line": 35, "end_line": 40, "exported": 1, "file": "src/graph/walker.ts", "subsystem": "src"}, {"id": 25, "name": "languageOf", "kind": "function", "start_line": 42, "end_line": 49, "exported": 1, "file": "src/graph/walker.ts", "subsystem": "src"}, {"id": 26, "name": "loadGitignore", "kind": "function", "start_line": 51, "end_line": 62, "exported": 0, "file": "src/graph/walker.ts", "subsystem": "src"}, {"id": 27, "name": "walk", "kind": "function", "start_line": 64, "end_line": 129, "exported": 1, "file": "src/graph/walker.ts", "subsystem": "src"}, {"id": 28, "name": "inScope", "kind": "function", "start_line": 72, "end_line": 76, "exported": 0, "file": "src/graph/walker.ts", "subsystem": "src"}, {"id": 29, "name": "visit", "kind": "function", "start_line": 78, "end_line": 107, "exported": 0, "file": "src/graph/walker.ts", "subsystem": "src"}, {"id": 30, "name": "countLines", "kind": "function", "start_line": 131, "end_line": 138, "exported": 1, "file": "src/graph/walker.ts", "subsystem": "src"}, {"id": 31, "name": "subsystemOf", "kind": "function", "start_line": 145, "end_line": 173, "exported": 1, "file": "src/graph/walker.ts", "subsystem": "src"}, {"id": 32, "name": "RcaRequest", "kind": "interface", "start_line": 34, "end_line": 40, "exported": 1, "file": "src/rca/runner.ts", "subsystem": "src"}, {"id": 33, "name": "RcaResult", "kind": "interface", "start_line": 42, "end_line": 51, "exported": 1, "file": "src/rca/runner.ts", "subsystem": "src"}, {"id": 34, "name": "FailureScope", "kind": "type", "start_line": 28, "end_line": 32, "exported": 1, "file": "src/rca/runner.ts", "subsystem": "src"}, {"id": 35, "name": "runRca", "kind": "function", "start_line": 53, "end_line": 237, "exported": 1, "file": "src/rca/runner.ts", "subsystem": "src"}, {"id": 36, "name": "isGitRepo", "kind": "function", "start_line": 239, "end_line": 256, "exported": 0, "file": "src/rca/runner.ts", "subsystem": "src"}, {"id": 37, "name": "computeFirstHypothesis", "kind": "function", "start_line": 258, "end_line": 271, "exported": 0, "file": "src/rca/runner.ts", "subsystem": "src"}, {"id": 38, "name": "FileRow", "kind": "interface", "start_line": 16, "end_line": 22, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 39, "name": "SymbolRow", "kind": "interface", "start_line": 24, "end_line": 34, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 40, "name": "EdgeRow", "kind": "interface", "start_line": 36, "end_line": 44, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 41, "name": "ImportRow", "kind": "interface", "start_line": 46, "end_line": 53, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 42, "name": "ExtractedSymbol", "kind": "interface", "start_line": 55, "end_line": 63, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 43, "name": "ExtractedEdge", "kind": "interface", "start_line": 65, "end_line": 73, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 44, "name": "ExtractedImport", "kind": "interface", "start_line": 75, "end_line": 80, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 45, "name": "ExtractedFile", "kind": "interface", "start_line": 82, "end_line": 89, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 46, "name": "Definition", "kind": "interface", "start_line": 91, "end_line": 101, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 47, "name": "RecentChange", "kind": "interface", "start_line": 103, "end_line": 109, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 48, "name": "CallerNode", "kind": "interface", "start_line": 111, "end_line": 119, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 49, "name": "CallerTree", "kind": "interface", "start_line": 121, "end_line": 124, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 50, "name": "CalleeNode", "kind": "interface", "start_line": 126, "end_line": 135, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 51, "name": "CalleeTree", "kind": "interface", "start_line": 137, "end_line": 140, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 52, "name": "CausalCandidate", "kind": "interface", "start_line": 146, "end_line": 176, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 53, "name": "SymbolSummary", "kind": "interface", "start_line": 178, "end_line": 185, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 54, "name": "GitChange", "kind": "interface", "start_line": 187, "end_line": 194, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 55, "name": "Language", "kind": "type", "start_line": 1, "end_line": 1, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 56, "name": "SymbolKind", "kind": "type", "start_line": 3, "end_line": 10, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 57, "name": "EdgeKind", "kind": "type", "start_line": 12, "end_line": 12, "exported": 1, "file": "src/types.ts", "subsystem": "src"}, {"id": 58, "name": "ImportKind", "kind": "type", "start_line": 14, "end_line": 14, "exported": 1, "file": "src/types.ts", "subsystem": "src"}];
+const EDGES   = [{"id": 1, "f": 5, "t": null, "to_name": "split", "kind": "CALLS", "confidence": 0.5}, {"id": 2, "f": 6, "t": 25, "to_name": "languageOf", "kind": "CALLS", "confidence": 1.0}, {"id": 3, "f": 6, "t": 25, "to_name": "languageOf", "kind": "CALLS", "confidence": 1.0}, {"id": 4, "f": 7, "t": null, "to_name": "readFileSync", "kind": "CALLS", "confidence": 0.5}, {"id": 5, "f": 8, "t": null, "to_name": "statSync", "kind": "CALLS", "confidence": 0.5}, {"id": 6, "f": 10, "t": null, "to_name": "readdirSync", "kind": "CALLS", "confidence": 0.5}, {"id": 7, "f": 10, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 8, "f": 10, "t": null, "to_name": "isDirectory", "kind": "CALLS", "confidence": 0.5}, {"id": 9, "f": 10, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 10, "f": 10, "t": 10, "to_name": "visit", "kind": "CALLS", "confidence": 1.0}, {"id": 11, "f": 10, "t": null, "to_name": "isFile", "kind": "CALLS", "confidence": 0.5}, {"id": 12, "f": 10, "t": 5, "to_name": "toPosix", "kind": "CALLS", "confidence": 1.0}, {"id": 13, "f": 10, "t": null, "to_name": "relative", "kind": "CALLS", "confidence": 0.5}, {"id": 14, "f": 10, "t": 6, "to_name": "isParseable", "kind": "CALLS", "confidence": 1.0}, {"id": 15, "f": 10, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 16, "f": 10, "t": null, "to_name": "add", "kind": "CALLS", "confidence": 0.5}, {"id": 17, "f": 10, "t": 5, "to_name": "toPosix", "kind": "CALLS", "confidence": 1.0}, {"id": 18, "f": 10, "t": null, "to_name": "relative", "kind": "CALLS", "confidence": 0.5}, {"id": 19, "f": 10, "t": 7, "to_name": "safeRead", "kind": "CALLS", "confidence": 1.0}, {"id": 20, "f": 10, "t": null, "to_name": "parse", "kind": "CALLS", "confidence": 0.5}, {"id": 21, "f": 10, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 22, "f": 10, "t": 5, "to_name": "toPosix", "kind": "CALLS", "confidence": 1.0}, {"id": 23, "f": 10, "t": null, "to_name": "relative", "kind": "CALLS", "confidence": 0.5}, {"id": 24, "f": 9, "t": 10, "to_name": "visit", "kind": "CALLS", "confidence": 1.0}, {"id": 25, "f": 9, "t": null, "to_name": "includes", "kind": "CALLS", "confidence": 0.5}, {"id": 26, "f": 9, "t": null, "to_name": "slice", "kind": "CALLS", "confidence": 0.5}, {"id": 27, "f": 9, "t": null, "to_name": "lastIndexOf", "kind": "CALLS", "confidence": 0.5}, {"id": 28, "f": 9, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 29, "f": 9, "t": null, "to_name": "includes", "kind": "CALLS", "confidence": 0.5}, {"id": 30, "f": 9, "t": null, "to_name": "slice", "kind": "CALLS", "confidence": 0.5}, {"id": 31, "f": 9, "t": null, "to_name": "lastIndexOf", "kind": "CALLS", "confidence": 0.5}, {"id": 32, "f": 9, "t": null, "to_name": "get", "kind": "CALLS", "confidence": 0.5}, {"id": 33, "f": 9, "t": null, "to_name": "set", "kind": "CALLS", "confidence": 0.5}, {"id": 34, "f": 11, "t": 5, "to_name": "toPosix", "kind": "CALLS", "confidence": 1.0}, {"id": 35, "f": 11, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 36, "f": 11, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 37, "f": 11, "t": null, "to_name": "statSync", "kind": "CALLS", "confidence": 0.5}, {"id": 38, "f": 12, "t": 5, "to_name": "toPosix", "kind": "CALLS", "confidence": 1.0}, {"id": 39, "f": 12, "t": null, "to_name": "dirname", "kind": "CALLS", "confidence": 0.5}, {"id": 40, "f": 12, "t": null, "to_name": "dirname", "kind": "CALLS", "confidence": 0.5}, {"id": 41, "f": 12, "t": null, "to_name": "slice", "kind": "CALLS", "confidence": 0.5}, {"id": 42, "f": 12, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 43, "f": 12, "t": null, "to_name": "replace", "kind": "CALLS", "confidence": 0.5}, {"id": 44, "f": 12, "t": null, "to_name": "normalize", "kind": "CALLS", "confidence": 0.5}, {"id": 45, "f": 12, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 46, "f": 12, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 47, "f": 12, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 48, "f": 12, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 49, "f": 12, "t": 11, "to_name": "tryFiles", "kind": "CALLS", "confidence": 1.0}, {"id": 50, "f": 13, "t": null, "to_name": "filter", "kind": "CALLS", "confidence": 0.5}, {"id": 51, "f": 13, "t": null, "to_name": "startsWith", "kind": "CALLS", "confidence": 0.5}, {"id": 52, "f": 13, "t": null, "to_name": "slice", "kind": "CALLS", "confidence": 0.5}, {"id": 53, "f": 13, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 54, "f": 13, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 55, "f": 13, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 56, "f": 13, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 57, "f": 13, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 58, "f": 13, "t": 11, "to_name": "tryFiles", "kind": "CALLS", "confidence": 1.0}, {"id": 59, "f": 14, "t": null, "to_name": "exec", "kind": "CALLS", "confidence": 0.5}, {"id": 60, "f": 14, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 61, "f": 14, "t": null, "to_name": "exec", "kind": "CALLS", "confidence": 0.5}, {"id": 62, "f": 14, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 63, "f": 14, "t": null, "to_name": "exec", "kind": "CALLS", "confidence": 0.5}, {"id": 64, "f": 14, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 65, "f": 15, "t": null, "to_name": "indexOf", "kind": "CALLS", "confidence": 0.5}, {"id": 66, "f": 15, "t": null, "to_name": "slice", "kind": "CALLS", "confidence": 0.5}, {"id": 67, "f": 15, "t": null, "to_name": "slice", "kind": "CALLS", "confidence": 0.5}, {"id": 68, "f": 15, "t": null, "to_name": "get", "kind": "CALLS", "confidence": 0.5}, {"id": 69, "f": 15, "t": null, "to_name": "replace", "kind": "CALLS", "confidence": 0.5}, {"id": 70, "f": 15, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 71, "f": 15, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 72, "f": 15, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 73, "f": 15, "t": 11, "to_name": "tryFiles", "kind": "CALLS", "confidence": 1.0}, {"id": 74, "f": 16, "t": 25, "to_name": "languageOf", "kind": "CALLS", "confidence": 1.0}, {"id": 75, "f": 16, "t": null, "to_name": "startsWith", "kind": "CALLS", "confidence": 0.5}, {"id": 76, "f": 16, "t": 12, "to_name": "resolveRelative", "kind": "CALLS", "confidence": 1.0}, {"id": 77, "f": 16, "t": 15, "to_name": "resolveAbsolutePy", "kind": "CALLS", "confidence": 1.0}, {"id": 78, "f": 16, "t": null, "to_name": "startsWith", "kind": "CALLS", "confidence": 0.5}, {"id": 79, "f": 16, "t": null, "to_name": "startsWith", "kind": "CALLS", "confidence": 0.5}, {"id": 80, "f": 16, "t": 12, "to_name": "resolveRelative", "kind": "CALLS", "confidence": 1.0}, {"id": 81, "f": 16, "t": 13, "to_name": "resolvePackage", "kind": "CALLS", "confidence": 1.0}, {"id": 82, "f": 17, "t": null, "to_name": "exec", "kind": "CALLS", "confidence": 0.5}, {"id": 83, "f": 17, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 84, "f": 17, "t": null, "to_name": "add", "kind": "CALLS", "confidence": 0.5}, {"id": 85, "f": 17, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 86, "f": 17, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 87, "f": 17, "t": null, "to_name": "exec", "kind": "CALLS", "confidence": 0.5}, {"id": 88, "f": 17, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 89, "f": 17, "t": null, "to_name": "add", "kind": "CALLS", "confidence": 0.5}, {"id": 90, "f": 17, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 91, "f": 17, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 92, "f": 18, "t": null, "to_name": "startsWith", "kind": "CALLS", "confidence": 0.5}, {"id": 93, "f": 18, "t": null, "to_name": "slice", "kind": "CALLS", "confidence": 0.5}, {"id": 94, "f": 18, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 95, "f": 18, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 96, "f": 18, "t": null, "to_name": "statSync", "kind": "CALLS", "confidence": 0.5}, {"id": 97, "f": 18, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 98, "f": 18, "t": 5, "to_name": "toPosix", "kind": "CALLS", "confidence": 1.0}, {"id": 99, "f": 18, "t": null, "to_name": "relative", "kind": "CALLS", "confidence": 0.5}, {"id": 100, "f": 18, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 101, "f": 18, "t": null, "to_name": "startsWith", "kind": "CALLS", "confidence": 0.5}, {"id": 102, "f": 18, "t": null, "to_name": "relative", "kind": "CALLS", "confidence": 0.5}, {"id": 103, "f": 18, "t": null, "to_name": "startsWith", "kind": "CALLS", "confidence": 0.5}, {"id": 104, "f": 18, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 105, "f": 18, "t": 5, "to_name": "toPosix", "kind": "CALLS", "confidence": 1.0}, {"id": 106, "f": 18, "t": 5, "to_name": "toPosix", "kind": "CALLS", "confidence": 1.0}, {"id": 107, "f": 19, "t": null, "to_name": "replace", "kind": "CALLS", "confidence": 0.5}, {"id": 108, "f": 19, "t": 7, "to_name": "safeRead", "kind": "CALLS", "confidence": 1.0}, {"id": 109, "f": 19, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 110, "f": 19, "t": null, "to_name": "test", "kind": "CALLS", "confidence": 0.5}, {"id": 111, "f": 19, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 112, "f": 20, "t": null, "to_name": "basename", "kind": "CALLS", "confidence": 0.5}, {"id": 113, "f": 20, "t": null, "to_name": "replace", "kind": "CALLS", "confidence": 0.5}, {"id": 114, "f": 20, "t": 7, "to_name": "safeRead", "kind": "CALLS", "confidence": 1.0}, {"id": 115, "f": 20, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 116, "f": 20, "t": null, "to_name": "test", "kind": "CALLS", "confidence": 0.5}, {"id": 117, "f": 20, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 118, "f": 21, "t": 9, "to_name": "scanRepo", "kind": "CALLS", "confidence": 1.0}, {"id": 119, "f": 21, "t": 5, "to_name": "toPosix", "kind": "CALLS", "confidence": 1.0}, {"id": 120, "f": 21, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 121, "f": 21, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 122, "f": 21, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 123, "f": 21, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 124, "f": 21, "t": 5, "to_name": "toPosix", "kind": "CALLS", "confidence": 1.0}, {"id": 125, "f": 21, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 126, "f": 21, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 127, "f": 21, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 128, "f": 21, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 129, "f": 21, "t": 19, "to_name": "findSymbolFiles", "kind": "CALLS", "confidence": 1.0}, {"id": 130, "f": 21, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 131, "f": 21, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 132, "f": 21, "t": 17, "to_name": "parseStack", "kind": "CALLS", "confidence": 1.0}, {"id": 133, "f": 21, "t": 18, "to_name": "toRepoRel", "kind": "CALLS", "confidence": 1.0}, {"id": 134, "f": 21, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 135, "f": 21, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 136, "f": 21, "t": 6, "to_name": "isParseable", "kind": "CALLS", "confidence": 1.0}, {"id": 137, "f": 21, "t": null, "to_name": "includes", "kind": "CALLS", "confidence": 0.5}, {"id": 138, "f": 21, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 139, "f": 21, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 140, "f": 21, "t": null, "to_name": "filter", "kind": "CALLS", "confidence": 0.5}, {"id": 141, "f": 21, "t": null, "to_name": "max", "kind": "CALLS", "confidence": 0.5}, {"id": 142, "f": 21, "t": null, "to_name": "round", "kind": "CALLS", "confidence": 0.5}, {"id": 143, "f": 21, "t": 8, "to_name": "safeSize", "kind": "CALLS", "confidence": 1.0}, {"id": 144, "f": 21, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 145, "f": 22, "t": 6, "to_name": "isParseable", "kind": "CALLS", "confidence": 1.0}, {"id": 146, "f": 22, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 147, "f": 22, "t": null, "to_name": "max", "kind": "CALLS", "confidence": 0.5}, {"id": 148, "f": 22, "t": null, "to_name": "round", "kind": "CALLS", "confidence": 0.5}, {"id": 149, "f": 22, "t": 8, "to_name": "safeSize", "kind": "CALLS", "confidence": 1.0}, {"id": 150, "f": 22, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 151, "f": 22, "t": null, "to_name": "add", "kind": "CALLS", "confidence": 0.5}, {"id": 152, "f": 21, "t": null, "to_name": "from", "kind": "CALLS", "confidence": 0.5}, {"id": 153, "f": 21, "t": 7, "to_name": "safeRead", "kind": "CALLS", "confidence": 1.0}, {"id": 154, "f": 21, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 155, "f": 21, "t": 25, "to_name": "languageOf", "kind": "CALLS", "confidence": 1.0}, {"id": 156, "f": 21, "t": 14, "to_name": "extractImports", "kind": "CALLS", "confidence": 1.0}, {"id": 157, "f": 21, "t": 16, "to_name": "resolveSpec", "kind": "CALLS", "confidence": 1.0}, {"id": 158, "f": 21, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 159, "f": 21, "t": 6, "to_name": "isParseable", "kind": "CALLS", "confidence": 1.0}, {"id": 160, "f": 21, "t": 22, "to_name": "addFile", "kind": "CALLS", "confidence": 1.0}, {"id": 161, "f": 21, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 162, "f": 21, "t": 20, "to_name": "findCallers", "kind": "CALLS", "confidence": 1.0}, {"id": 163, "f": 21, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 164, "f": 21, "t": 22, "to_name": "addFile", "kind": "CALLS", "confidence": 1.0}, {"id": 165, "f": 21, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 166, "f": 21, "t": null, "to_name": "from", "kind": "CALLS", "confidence": 0.5}, {"id": 167, "f": 25, "t": null, "to_name": "lastIndexOf", "kind": "CALLS", "confidence": 0.5}, {"id": 168, "f": 25, "t": null, "to_name": "slice", "kind": "CALLS", "confidence": 0.5}, {"id": 169, "f": 25, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 170, "f": 25, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 171, "f": 26, "t": null, "to_name": "ignore", "kind": "CALLS", "confidence": 0.5}, {"id": 172, "f": 26, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 173, "f": 26, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 174, "f": 26, "t": null, "to_name": "add", "kind": "CALLS", "confidence": 0.5}, {"id": 175, "f": 26, "t": null, "to_name": "readFileSync", "kind": "CALLS", "confidence": 0.5}, {"id": 176, "f": 27, "t": 26, "to_name": "loadGitignore", "kind": "CALLS", "confidence": 1.0}, {"id": 177, "f": 27, "t": null, "to_name": "map", "kind": "CALLS", "confidence": 0.5}, {"id": 178, "f": 27, "t": null, "to_name": "split", "kind": "CALLS", "confidence": 0.5}, {"id": 179, "f": 28, "t": null, "to_name": "split", "kind": "CALLS", "confidence": 0.5}, {"id": 180, "f": 28, "t": null, "to_name": "some", "kind": "CALLS", "confidence": 0.5}, {"id": 181, "f": 28, "t": null, "to_name": "startsWith", "kind": "CALLS", "confidence": 0.5}, {"id": 182, "f": 29, "t": null, "to_name": "readdirSync", "kind": "CALLS", "confidence": 0.5}, {"id": 183, "f": 29, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 184, "f": 29, "t": null, "to_name": "relative", "kind": "CALLS", "confidence": 0.5}, {"id": 185, "f": 29, "t": null, "to_name": "startsWith", "kind": "CALLS", "confidence": 0.5}, {"id": 186, "f": 29, "t": null, "to_name": "isDirectory", "kind": "CALLS", "confidence": 0.5}, {"id": 187, "f": 29, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 188, "f": 29, "t": null, "to_name": "ignores", "kind": "CALLS", "confidence": 0.5}, {"id": 189, "f": 29, "t": 29, "to_name": "visit", "kind": "CALLS", "confidence": 1.0}, {"id": 190, "f": 29, "t": null, "to_name": "isFile", "kind": "CALLS", "confidence": 0.5}, {"id": 191, "f": 29, "t": null, "to_name": "isSymbolicLink", "kind": "CALLS", "confidence": 0.5}, {"id": 192, "f": 29, "t": null, "to_name": "ignores", "kind": "CALLS", "confidence": 0.5}, {"id": 193, "f": 29, "t": 28, "to_name": "inScope", "kind": "CALLS", "confidence": 1.0}, {"id": 194, "f": 29, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 195, "f": 29, "t": null, "to_name": "add", "kind": "CALLS", "confidence": 0.5}, {"id": 196, "f": 29, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 197, "f": 29, "t": null, "to_name": "split", "kind": "CALLS", "confidence": 0.5}, {"id": 198, "f": 29, "t": 25, "to_name": "languageOf", "kind": "CALLS", "confidence": 1.0}, {"id": 199, "f": 27, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 200, "f": 27, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 201, "f": 27, "t": null, "to_name": "statSync", "kind": "CALLS", "confidence": 0.5}, {"id": 202, "f": 27, "t": null, "to_name": "isFile", "kind": "CALLS", "confidence": 0.5}, {"id": 203, "f": 27, "t": null, "to_name": "has", "kind": "CALLS", "confidence": 0.5}, {"id": 204, "f": 27, "t": null, "to_name": "add", "kind": "CALLS", "confidence": 0.5}, {"id": 205, "f": 27, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 206, "f": 27, "t": null, "to_name": "split", "kind": "CALLS", "confidence": 0.5}, {"id": 207, "f": 27, "t": 25, "to_name": "languageOf", "kind": "CALLS", "confidence": 1.0}, {"id": 208, "f": 27, "t": null, "to_name": "isDirectory", "kind": "CALLS", "confidence": 0.5}, {"id": 209, "f": 27, "t": 29, "to_name": "visit", "kind": "CALLS", "confidence": 1.0}, {"id": 210, "f": 27, "t": 29, "to_name": "visit", "kind": "CALLS", "confidence": 1.0}, {"id": 211, "f": 30, "t": null, "to_name": "charCodeAt", "kind": "CALLS", "confidence": 0.5}, {"id": 212, "f": 31, "t": null, "to_name": "split", "kind": "CALLS", "confidence": 0.5}, {"id": 213, "f": 31, "t": null, "to_name": "slice", "kind": "CALLS", "confidence": 0.5}, {"id": 214, "f": 31, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 215, "f": 31, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 216, "f": 31, "t": null, "to_name": "parse", "kind": "CALLS", "confidence": 0.5}, {"id": 217, "f": 31, "t": null, "to_name": "readFileSync", "kind": "CALLS", "confidence": 0.5}, {"id": 218, "f": 31, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 219, "f": 31, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 220, "f": 31, "t": null, "to_name": "readFileSync", "kind": "CALLS", "confidence": 0.5}, {"id": 221, "f": 31, "t": null, "to_name": "match", "kind": "CALLS", "confidence": 0.5}, {"id": 222, "f": 35, "t": 21, "to_name": "resolveScope", "kind": "CALLS", "confidence": 1.0}, {"id": 223, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 224, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 225, "f": 35, "t": null, "to_name": "buildGraphContext", "kind": "CALLS", "confidence": 0.5}, {"id": 226, "f": 35, "t": null, "to_name": "buildCausalChainSection", "kind": "CALLS", "confidence": 0.5}, {"id": 227, "f": 35, "t": null, "to_name": "buildPrompt", "kind": "CALLS", "confidence": 0.5}, {"id": 228, "f": 35, "t": null, "to_name": "indexScope", "kind": "CALLS", "confidence": 0.5}, {"id": 229, "f": 35, "t": null, "to_name": "symbolsInFile", "kind": "CALLS", "confidence": 0.5}, {"id": 230, "f": 35, "t": null, "to_name": "find", "kind": "CALLS", "confidence": 0.5}, {"id": 231, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 232, "f": 35, "t": null, "to_name": "filter", "kind": "CALLS", "confidence": 0.5}, {"id": 233, "f": 35, "t": null, "to_name": "filter", "kind": "CALLS", "confidence": 0.5}, {"id": 234, "f": 35, "t": null, "to_name": "filter", "kind": "CALLS", "confidence": 0.5}, {"id": 235, "f": 35, "t": null, "to_name": "symbolsInFile", "kind": "CALLS", "confidence": 0.5}, {"id": 236, "f": 35, "t": null, "to_name": "find", "kind": "CALLS", "confidence": 0.5}, {"id": 237, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 238, "f": 35, "t": null, "to_name": "definitionOf", "kind": "CALLS", "confidence": 0.5}, {"id": 239, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 240, "f": 35, "t": null, "to_name": "callersOf", "kind": "CALLS", "confidence": 0.5}, {"id": 241, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 242, "f": 35, "t": null, "to_name": "calleesOf", "kind": "CALLS", "confidence": 0.5}, {"id": 243, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 244, "f": 35, "t": null, "to_name": "symbolsInFile", "kind": "CALLS", "confidence": 0.5}, {"id": 245, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 246, "f": 35, "t": null, "to_name": "recentlyChangedNear", "kind": "CALLS", "confidence": 0.5}, {"id": 247, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 248, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 249, "f": 35, "t": 36, "to_name": "isGitRepo", "kind": "CALLS", "confidence": 1.0}, {"id": 250, "f": 35, "t": null, "to_name": "createRecencyHydrator", "kind": "CALLS", "confidence": 0.5}, {"id": 251, "f": 35, "t": null, "to_name": "hydrateCallerTree", "kind": "CALLS", "confidence": 0.5}, {"id": 252, "f": 35, "t": null, "to_name": "hydrateCalleeTree", "kind": "CALLS", "confidence": 0.5}, {"id": 253, "f": 35, "t": null, "to_name": "fetch", "kind": "CALLS", "confidence": 0.5}, {"id": 254, "f": 35, "t": null, "to_name": "buildCausalChain", "kind": "CALLS", "confidence": 0.5}, {"id": 255, "f": 35, "t": null, "to_name": "push", "kind": "CALLS", "confidence": 0.5}, {"id": 256, "f": 35, "t": null, "to_name": "String", "kind": "CALLS", "confidence": 0.5}, {"id": 257, "f": 35, "t": 37, "to_name": "computeFirstHypothesis", "kind": "CALLS", "confidence": 1.0}, {"id": 258, "f": 35, "t": null, "to_name": "buildGraphContext", "kind": "CALLS", "confidence": 0.5}, {"id": 259, "f": 35, "t": null, "to_name": "buildCausalChainSection", "kind": "CALLS", "confidence": 0.5}, {"id": 260, "f": 35, "t": null, "to_name": "buildPrompt", "kind": "CALLS", "confidence": 0.5}, {"id": 261, "f": 35, "t": null, "to_name": "close", "kind": "CALLS", "confidence": 0.5}, {"id": 262, "f": 36, "t": null, "to_name": "existsSync", "kind": "CALLS", "confidence": 0.5}, {"id": 263, "f": 36, "t": null, "to_name": "join", "kind": "CALLS", "confidence": 0.5}, {"id": 264, "f": 36, "t": null, "to_name": "dirname", "kind": "CALLS", "confidence": 0.5}];
+const ANCHOR_NAME = "resolveScope";
+
+//─── KIND COLORS (must match CSS variables) ────────────────────────────
+const KIND_COLOR = {
+  function:  "#7aa8ff",
+  method:    "#c084fc",
+  class:     "#ffb547",
+  interface: "#42e6ff",
+  const:     "#5dd699",
+  enum:      "#ff6b8b",
+  type:      "#ff8fc4",
+};
+
+//─── FILE → NEBULA / DISPLAY ───────────────────────────────────────────
+const FILE_META = {
+  "src/graph/scope.ts":        { id: "scope",  label: "scope.ts",        nebulaId: "nebula-scope",  hueDeg: 240 },
+  "src/graph/walker.ts":       { id: "walker", label: "walker.ts",       nebulaId: "nebula-walker", hueDeg: 150 },
+  "src/rca/runner.ts":         { id: "runner", label: "runner.ts",       nebulaId: "nebula-runner", hueDeg: 280 },
+  "src/types.ts":              { id: "types",  label: "types.ts",        nebulaId: "nebula-types",  hueDeg:  30 },
+};
+const FILES = Object.keys(FILE_META);
+
+//─── BUILD GRAPH ──────────────────────────────────────────────────────
+// Compute degree (incoming + outgoing) per symbol — drives star magnitude.
+const degree = new Map(SYMBOLS.map((s) => [s.id, 0]));
+for (const e of EDGES) {
+  if (e.f) degree.set(e.f, (degree.get(e.f) || 0) + 1);
+  if (e.t) degree.set(e.t, (degree.get(e.t) || 0) + 1);
+}
+
+// Star magnitude (radius) = base + log(loc + degree). Exported gets +1.
+function starRadius(s) {
+  const loc = Math.max(1, s.end_line - s.start_line);
+  const deg = degree.get(s.id) || 0;
+  const base = 2.4;
+  const r = base + Math.log2(loc + deg + 2);
+  return Math.min(11, r);
+}
+
+// Layout: cluster by file, anchor file (scope.ts) at the visual center.
+// Hand-tuned so dense clusters get more breathing room and sparse ones
+// (walker.ts, runner.ts) sit closer in to read as part of the same
+// composition rather than orphans floating off-canvas.
+const W = 1920, H = 1080;
+const CLUSTER_CENTERS = {
+  "src/graph/scope.ts":  { x: 920, y: 540 },
+  "src/graph/walker.ts": { x: 1380, y: 360 },
+  "src/rca/runner.ts":   { x: 1400, y: 760 },
+  "src/types.ts":        { x: 460, y: 760 },
+};
+
+// File label positions — anchored at cluster edges away from the busy
+// center so they read as cartography. The anchor's file label is bigger;
+// the rest are subordinate.
+const FILE_LABEL_POS = {
+  "src/graph/scope.ts":  { x: 720, y: 270, anchor: "start", size: "large" },
+  "src/graph/walker.ts": { x: 1500, y: 250, anchor: "start", size: "small" },
+  "src/rca/runner.ts":   { x: 1500, y: 900, anchor: "start", size: "small" },
+  "src/types.ts":        { x: 240, y: 900, anchor: "start", size: "small" },
+};
+
+// Initialize positions roughly at cluster center (with small jitter so
+// d3 force has something to spread).
+for (const s of SYMBOLS) {
+  const c = CLUSTER_CENTERS[s.file] || { x: W / 2, y: H / 2 };
+  s.x = c.x + (Math.random() - 0.5) * 30;
+  s.y = c.y + (Math.random() - 0.5) * 30;
+}
+
+// Build link data for d3 force (only resolved + with both endpoints).
+const symbolById = new Map(SYMBOLS.map((s) => [s.id, s]));
+const linkData = EDGES
+  .filter((e) => e.f != null && e.t != null && symbolById.has(e.f) && symbolById.has(e.t))
+  .map((e) => ({ source: e.f, target: e.t, confidence: e.confidence, kind: e.kind }));
+
+// d3 force simulation — file-clustering pull + collision.
+const sim = d3.forceSimulation(SYMBOLS)
+  .force("link", d3.forceLink(linkData).id((d) => d.id).distance((d) => {
+    // Tighter for same-file links, looser cross-file.
+    return (d.source.file === d.target.file) ? 28 : 80;
+  }).strength((d) => (d.source.file === d.target.file) ? 0.8 : 0.2))
+  .force("charge", d3.forceManyBody().strength(-90))
+  .force("collide", d3.forceCollide((d) => starRadius(d) + 4))
+  .force("clusterX", d3.forceX((d) => (CLUSTER_CENTERS[d.file] || { x: W/2 }).x).strength(0.18))
+  .force("clusterY", d3.forceY((d) => (CLUSTER_CENTERS[d.file] || { y: H/2 }).y).strength(0.18))
+  .stop();
+
+// Run the simulation enough ticks to settle.
+for (let i = 0; i < 320; i++) sim.tick();
+
+// Find the anchor symbol.
+const anchor = SYMBOLS.find((s) => s.name === ANCHOR_NAME) || SYMBOLS[0];
+
+//─── RENDER ───────────────────────────────────────────────────────────
+const svg = d3.select("#graph");
+
+// Layer 1: subsystem nebulas. One big radial gradient circle per file
+// cluster, blurred via CSS filter.
+const nebulaLayer = svg.select(".nebula-layer");
+for (const file of FILES) {
+  const c = CLUSTER_CENTERS[file];
+  const m = FILE_META[file];
+  // Two-layer nebula: outer soft cloud, inner brighter core.
+  nebulaLayer.append("circle")
+    .attr("cx", c.x).attr("cy", c.y).attr("r", 240)
+    .attr("class", "nebula")
+    .attr("fill", `url(#${m.nebulaId})`);
+  nebulaLayer.append("circle")
+    .attr("cx", c.x).attr("cy", c.y).attr("r", 100)
+    .attr("class", "nebula-core")
+    .attr("fill", `url(#${m.nebulaId})`);
+}
+
+// Layer 2: constellation lines — thin guide lines connecting same-file
+// stars (drawn from the cluster centroid to each star).
+const constLayer = svg.select(".constellation-layer");
+for (const file of FILES) {
+  const stars = SYMBOLS.filter((s) => s.file === file);
+  if (stars.length < 3) continue;
+  // Sort by angle from cluster centroid to draw a closed polygon outline
+  // of the cluster — feels like a "constellation drawing".
+  const cx = d3.mean(stars, (s) => s.x);
+  const cy = d3.mean(stars, (s) => s.y);
+  const sorted = stars.slice().sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+  // Hull-style line between sequential members.
+  let path = "M ";
+  sorted.forEach((s, i) => { path += (i === 0 ? "" : "L ") + s.x.toFixed(1) + " " + s.y.toFixed(1) + " "; });
+  path += "Z";
+  constLayer.append("path")
+    .attr("d", path)
+    .attr("class", "constellation-line");
+}
+
+// Layer 3: edges. Curved Bezier paths.
+const edgeLayer = svg.select(".edge-layer");
+const anchorIncident = new Set();
+for (const e of linkData) {
+  if (e.source.id === anchor.id || e.target.id === anchor.id) {
+    anchorIncident.add(`${e.source.id}-${e.target.id}`);
+  }
+}
+for (const e of linkData) {
+  const src = e.source, tgt = e.target;
+  const dx = tgt.x - src.x, dy = tgt.y - src.y;
+  // Slight curve via offset midpoint, perpendicular to the edge.
+  const mx = (src.x + tgt.x) / 2 - dy * 0.12;
+  const my = (src.y + tgt.y) / 2 + dx * 0.12;
+  const path = `M ${src.x.toFixed(1)} ${src.y.toFixed(1)} Q ${mx.toFixed(1)} ${my.toFixed(1)} ${tgt.x.toFixed(1)} ${tgt.y.toFixed(1)}`;
+  let style = "solid";
+  if (e.confidence < 0.7) style = "dotted";
+  else if (e.confidence < 0.95) style = "dashed";
+  const isAnchor = anchorIncident.has(`${src.id}-${tgt.id}`);
+  edgeLayer.append("path")
+    .attr("d", path)
+    .attr("class", "edge " + style + (isAnchor ? " anchor-incident" : ""));
+}
+
+// Layer 4: anchor halo + lens flare + concentric rings.
+const anchorLayer = svg.select(".anchor-layer");
+// Outer halo (large, soft)
+anchorLayer.append("circle")
+  .attr("cx", anchor.x).attr("cy", anchor.y).attr("r", 110)
+  .attr("class", "anchor-halo-outer");
+// Inner halo (tighter, brighter)
+anchorLayer.append("circle")
+  .attr("cx", anchor.x).attr("cy", anchor.y).attr("r", 38)
+  .attr("class", "anchor-halo-inner");
+// 4-point lens flare (cross + diagonals)
+const flareLen = 100;
+for (const angle of [0, 45, 90, 135]) {
+  const rad = (angle * Math.PI) / 180;
+  const dx = Math.cos(rad) * flareLen;
+  const dy = Math.sin(rad) * flareLen;
+  anchorLayer.append("line")
+    .attr("x1", anchor.x - dx).attr("y1", anchor.y - dy)
+    .attr("x2", anchor.x + dx).attr("y2", anchor.y + dy)
+    .attr("class", "anchor-flare")
+    .attr("stroke-width", angle % 90 === 0 ? 1.4 : 0.9)
+    .attr("opacity", angle % 90 === 0 ? 0.7 : 0.4);
+}
+// Concentric rings (3 of them, fading)
+[20, 30, 44].forEach((r, i) => {
+  anchorLayer.append("circle")
+    .attr("cx", anchor.x).attr("cy", anchor.y).attr("r", r)
+    .attr("class", "anchor-ring" + (i >= 1 ? " outer" : ""))
+    .attr("opacity", [0.55, 0.3, 0.15][i]);
+});
+
+// Layer 5: stars (nodes).
+const starLayer = svg.select(".star-layer");
+for (const s of SYMBOLS) {
+  const r = starRadius(s);
+  const fill = KIND_COLOR[s.kind] || "#888";
+  const isAnchor = (s.name === ANCHOR_NAME);
+  starLayer.append("circle")
+    .attr("cx", s.x).attr("cy", s.y)
+    .attr("r", isAnchor ? r + 1.5 : r)
+    .attr("class", "star" + (s.exported ? " exported" : " dim"))
+    .attr("fill", fill)
+    .attr("style", `color: ${fill};`)  /* used by drop-shadow filter */
+    .attr("stroke", isAnchor ? "#fff" : "none")
+    .attr("stroke-width", isAnchor ? 1.5 : 0);
+}
+
+// Layer 6: selective labels with collision avoidance.
+// Strategy: pick anchor + top-N per cluster; assign each a candidate
+// position (above the star); if it intersects an already-placed label,
+// rotate the offset around the star (8-direction lookup) until clear,
+// then a final radial push from the cluster center if still colliding.
+// This gives clean labels for ~25 selected stars without piling up.
+const labelLayer = svg.select(".label-layer");
+const TOP_PER_FILE = 5;
+const labeled = new Set([anchor.id]);
+for (const file of FILES) {
+  const fileSyms = SYMBOLS.filter((s) => s.file === file);
+  fileSyms.sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0));
+  for (const s of fileSyms.slice(0, TOP_PER_FILE)) labeled.add(s.id);
+}
+
+// Approximate label bounding box (we don't have measureText pre-render);
+// estimate width = chars * 6.2px @ 10px mono, height = 12px.
+const placedRects = [];
+function rectsOverlap(a, b, pad = 4) {
+  return !(a.x + a.w + pad < b.x || b.x + b.w + pad < a.x ||
+           a.y + a.h + pad < b.y || b.y + b.h + pad < a.y);
+}
+function tryPlace(name, sx, sy, dx, dy, anchor, isAnchor) {
+  const charW = isAnchor ? 7.4 : 6.2;
+  const w = name.length * charW;
+  const h = isAnchor ? 14 : 12;
+  // text-anchor "middle" centers; "start" begins at x.
+  let left = anchor === "middle" ? sx + dx - w / 2 : sx + dx;
+  if (anchor === "end") left = sx + dx - w;
+  const top = sy + dy - h * 0.85;
+  return { x: left, y: top, w, h, sx, sy, dx, dy, anchor, isAnchor, name };
+}
+
+// 8-direction offsets, in order of preference (top, top-right, ...).
+const DIRECTIONS = [
+  { dx:  0, dy: -16, anchor: "middle" },   // top
+  { dx: 14, dy: -10, anchor: "start"  },   // top-right
+  { dx: 14, dy:   4, anchor: "start"  },   // right
+  { dx: 14, dy:  16, anchor: "start"  },   // bot-right
+  { dx:  0, dy:  20, anchor: "middle" },   // bottom
+  { dx:-14, dy:  16, anchor: "end"    },   // bot-left
+  { dx:-14, dy:   4, anchor: "end"    },   // left
+  { dx:-14, dy: -10, anchor: "end"    },   // top-left
+];
+
+const candidates = [...labeled].map((id) => SYMBOLS.find((s) => s.id === id))
+  .filter(Boolean)
+  // Place anchor first (always wins), then high-degree first.
+  .sort((a, b) => {
+    if (a.id === anchor.id) return -1;
+    if (b.id === anchor.id) return 1;
+    return (degree.get(b.id) || 0) - (degree.get(a.id) || 0);
+  });
+
+for (const s of candidates) {
+  const isAnchor = (s.name === ANCHOR_NAME);
+  const r = starRadius(s);
+  // Special anchor placement: top-right, far enough to clear the lens flare.
+  if (isAnchor) {
+    const rect = tryPlace(s.name, s.x, s.y, 32, -34, "start", true);
+    placedRects.push(rect);
+    continue;
+  }
+  // Try 8 directions; pick first that doesn't collide with existing labels.
+  let chosen = null;
+  for (const dir of DIRECTIONS) {
+    const dy = dir.dy < 0 ? dir.dy - r * 0.4 : (dir.dy > 0 ? dir.dy + r * 0.4 : dir.dy);
+    const dx = dir.dx === 0 ? 0 : (dir.dx > 0 ? dir.dx + r * 0.4 : dir.dx - r * 0.4);
+    const candidate = tryPlace(s.name, s.x, s.y, dx, dy, dir.anchor, false);
+    if (!placedRects.some((p) => rectsOverlap(p, candidate))) {
+      chosen = candidate;
+      break;
+    }
+  }
+  if (chosen) placedRects.push(chosen);
+  // If everything collides, drop the label rather than pile up.
+}
+
+// Render the placed labels.
+for (const rect of placedRects) {
+  labelLayer.append("text")
+    .attr("x", rect.sx + rect.dx)
+    .attr("y", rect.sy + rect.dy)
+    .attr("text-anchor", rect.anchor)
+    .attr("class", "star-label" + (rect.isAnchor ? " anchor" : ""))
+    .text(rect.name);
+}
+
+// Layer 7: file labels (named constellations) — at predefined positions.
+const fileLabelLayer = svg.select(".file-label-layer");
+for (const file of FILES) {
+  const pos = FILE_LABEL_POS[file];
+  const meta = FILE_META[file];
+  fileLabelLayer.append("text")
+    .attr("x", pos.x).attr("y", pos.y)
+    .attr("text-anchor", pos.anchor)
+    .attr("class", "file-label" + (pos.size === "small" ? " small" : ""))
+    .text(meta.label);
+}
+</script>
+</body>
+</html>
