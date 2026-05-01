@@ -1,6 +1,17 @@
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+// Resolve content globs relative to THIS config file, not the CWD.
+// Vite runs from `packages/ui/`, so without this anchor Tailwind scans
+// nothing and silently drops every utility class.
+const here = dirname(fileURLToPath(import.meta.url));
+
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  content: [
+    resolve(here, "index.html"),
+    resolve(here, "src/**/*.{ts,tsx}"),
+  ],
   darkMode: "class",
   theme: {
     extend: {
@@ -12,7 +23,6 @@ export default {
         border: "hsl(var(--border))",
         accent: "hsl(var(--accent))",
         "accent-foreground": "hsl(var(--accent-foreground))",
-        // causal-score color ramp (red = top, cool = lower)
         "score-1": "#dc2626",
         "score-2": "#f97316",
         "score-3": "#eab308",

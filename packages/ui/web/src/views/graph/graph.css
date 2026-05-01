@@ -1,0 +1,193 @@
+/* Constellation graph view — observatory aesthetic.
+ *
+ * Three layers:
+ *   1) `.starfield` provides the radial-gradient deep-space background and
+ *      a faint static star-field via a `::before` pseudo-element. The
+ *      starfield sits below cytoscape's transparent canvas.
+ *   2) Cytoscape paints the dots/edges/halos on top.
+ *   3) Chrome (top bar, rail, inspector) lives as flex/grid siblings,
+ *      using a slightly darker semi-transparent background so the starfield
+ *      only shows through the canvas region.
+ */
+
+.graph-shell {
+  background: #050810;
+  color: #e4e4e7;
+  position: relative;
+}
+
+/* Deep-space background. Subtle radial gradient + static "stars" mask. */
+.starfield {
+  background:
+    radial-gradient(ellipse at 50% 45%, #0a0f1f 0%, #050810 70%);
+  position: relative;
+  isolation: isolate;
+}
+.starfield::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Layered tiny radial gradients to create static "stars". Opacity ~3%. */
+  background-image:
+    radial-gradient(1px 1px at 13% 22%, rgba(255, 255, 255, 0.45), transparent 50%),
+    radial-gradient(1px 1px at 77% 18%, rgba(255, 255, 255, 0.4), transparent 50%),
+    radial-gradient(1px 1px at 39% 71%, rgba(255, 255, 255, 0.35), transparent 50%),
+    radial-gradient(1px 1px at 88% 60%, rgba(255, 255, 255, 0.5), transparent 50%),
+    radial-gradient(1.5px 1.5px at 25% 85%, rgba(180, 220, 255, 0.5), transparent 50%),
+    radial-gradient(1px 1px at 60% 35%, rgba(255, 255, 255, 0.3), transparent 50%),
+    radial-gradient(1px 1px at 5% 55%, rgba(200, 220, 255, 0.4), transparent 50%),
+    radial-gradient(1.5px 1.5px at 92% 88%, rgba(255, 255, 255, 0.4), transparent 50%),
+    radial-gradient(1px 1px at 50% 10%, rgba(255, 255, 255, 0.35), transparent 50%);
+  opacity: 0.3;
+  z-index: 0;
+}
+.starfield > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Cytoscape host is transparent so the starfield shows through. */
+.cy-host {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}
+
+.canvas-region {
+  background: transparent;
+}
+
+/* Top bar — quiet, semi-transparent. */
+.constellation-topbar {
+  background: linear-gradient(180deg, rgba(10, 15, 31, 0.85), rgba(5, 8, 16, 0.6));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(6px);
+}
+
+.constellation-search {
+  background: rgba(12, 18, 36, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #e4e4e7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.constellation-search:focus {
+  outline: none;
+  border-color: rgba(92, 213, 255, 0.55);
+  box-shadow: 0 0 0 3px rgba(92, 213, 255, 0.12);
+}
+
+/* Rail — left explorer column. */
+.constellation-rail {
+  background: rgba(8, 12, 26, 0.85);
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+
+.kind-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  display: inline-block;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.rail-kind {
+  background: transparent;
+  cursor: pointer;
+}
+.rail-kind:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.rail-icon {
+  background: transparent;
+  cursor: pointer;
+}
+.rail-icon:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.rail-popover {
+  z-index: 50;
+  min-width: 90px;
+}
+
+/* Inspector — single-file reader. */
+.inspector-shell {
+  background: rgba(8, 12, 26, 0.92);
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+}
+.inspector-empty {
+  background: rgba(8, 12, 26, 0.85);
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+}
+.inspector-tabs {
+  background: rgba(10, 15, 31, 0.6);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.inspector-tab {
+  background: transparent;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.inspector-tab:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.inspector-tab--active {
+  background: rgba(92, 213, 255, 0.07);
+  border-color: rgba(92, 213, 255, 0.3);
+}
+.tab-close {
+  cursor: pointer;
+}
+.inspector-footer {
+  background: rgba(5, 8, 16, 0.85);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  white-space: nowrap;
+}
+
+/* Empty-state constellation sketch — a few SVG-like dots in CSS. */
+.constellation-sketch-art {
+  width: 96px;
+  height: 64px;
+  background-image:
+    radial-gradient(2px 2px at 12% 30%, #5cd5ff, transparent 60%),
+    radial-gradient(2px 2px at 35% 65%, #7aa8ff, transparent 60%),
+    radial-gradient(3px 3px at 60% 25%, #c084fc, transparent 60%),
+    radial-gradient(2px 2px at 80% 70%, #9b6dff, transparent 60%),
+    radial-gradient(1.5px 1.5px at 90% 30%, #5dd699, transparent 60%);
+  opacity: 0.6;
+}
+
+/* Monaco decorations — symbol start line + range. */
+.constellation-startline {
+  background: rgba(92, 213, 255, 0.06);
+  border-left: 2px solid #5cd5ff;
+}
+.constellation-startline-glyph {
+  background: linear-gradient(90deg, rgba(92, 213, 255, 0.6), transparent);
+  width: 2px !important;
+}
+.constellation-symbolrange {
+  background: rgba(92, 213, 255, 0.025);
+}
+
+/* Bottom-right instrument readout. */
+.instrument-readout {
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.85);
+}
+
+/* Subtle pulse on hovered nodes (cytoscape paints the ring; we just make
+ * the canvas feel alive by easing in any opacity changes that happen
+ * outside cytoscape — the canvas itself is paint-managed by cy). */
+@keyframes constellation-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.canvas-region > * {
+  animation: constellation-fade-in 250ms ease-out;
+}

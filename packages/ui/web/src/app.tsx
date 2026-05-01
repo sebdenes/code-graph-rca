@@ -5,6 +5,7 @@ import { useSession } from "./state/session.ts";
 import { AppShell } from "./components/shell.tsx";
 import { RcaView } from "./views/rca/rca-view.tsx";
 import { ImpactView } from "./views/impact/impact-view.tsx";
+import { GraphView } from "./views/graph/graph-view.tsx";
 
 export default function App() {
   const sessionId = useSession((s) => s.sessionId);
@@ -23,6 +24,8 @@ export default function App() {
     <AppShell sessions={sessionsQ.data?.sessions ?? []}>
       {!sessionId ? (
         <EmptyState loading={sessionsQ.isPending} />
+      ) : view === "graph" ? (
+        <GraphView sessionId={sessionId} />
       ) : view === "rca" ? (
         <RcaView sessionId={sessionId} />
       ) : (

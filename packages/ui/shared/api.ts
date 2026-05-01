@@ -82,6 +82,50 @@ export interface DiffResponse {
   files: Array<{ path: string; additions: number; deletions: number; patch: string }>;
 }
 
+/**
+ * The whole-scope code knowledge graph — the primary visual artifact.
+ * Independent of any RCA invocation.
+ */
+export interface GraphFileNode {
+  id: number;
+  path: string;
+  language: "typescript" | "python" | "unparsed";
+  subsystem: string;
+  loc: number;
+}
+
+export interface GraphSymbolNode {
+  id: number;
+  name: string;
+  kind: "function" | "method" | "class" | "interface" | "const" | "enum" | "type";
+  fileId: number;
+  startLine: number;
+  endLine: number;
+  signature: string | null;
+  exported: boolean;
+  parentName: string | null;
+  /** Up to ~10 lines of the symbol body, for rendering inside the node. */
+  bodyPreview: string;
+}
+
+export interface GraphEdgeRow {
+  id: number;
+  fromSymbolId: number;
+  toSymbolId: number | null;
+  toName: string;
+  kind: "CALLS" | "IMPORTS" | "EXTENDS" | "IMPLEMENTS";
+  confidence: number;
+  callLine: number | null;
+}
+
+export interface GraphResponse {
+  files: GraphFileNode[];
+  symbols: GraphSymbolNode[];
+  edges: GraphEdgeRow[];
+  /** True when the response was capped by `maxSymbols`; client can paginate further. */
+  truncated: boolean;
+}
+
 export interface ImpactRequest {
   symbolName: string;
   /** Optional file disambiguator when multiple symbols share a name. */

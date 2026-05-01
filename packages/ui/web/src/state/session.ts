@@ -6,7 +6,7 @@ interface SelectionState {
   /** The currently selected symbol (graph node). */
   selectedSymbol: { name: string; file: string | null; line: number | null } | null;
   /** Active top-level view. */
-  view: "rca" | "impact";
+  view: "graph" | "rca" | "impact";
   /** Score threshold for the graph filter. */
   scoreThreshold: number;
   /** Subsystem filter (null = all). */
@@ -25,7 +25,7 @@ interface SelectionState {
 export const useSession = create<SelectionState>((set) => ({
   sessionId: null,
   selectedSymbol: null,
-  view: "rca",
+  view: "graph",
   scoreThreshold: 0,
   subsystem: null,
   recencyDays: 90,

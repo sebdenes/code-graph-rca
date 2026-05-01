@@ -15,7 +15,7 @@ export function AppShell({ sessions, children }: Props) {
   const setView = useSession((s) => s.setView);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full w-full flex-col">
       <header className="flex items-center gap-4 border-b border-border px-4 py-2 text-sm">
         <div className="font-mono text-base font-semibold">cgrca-view</div>
 
@@ -36,7 +36,7 @@ export function AppShell({ sessions, children }: Props) {
         </div>
 
         <nav className="ml-auto flex gap-1">
-          {(["rca", "impact"] as const).map((v) => (
+          {(["graph", "rca", "impact"] as const).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
@@ -50,7 +50,7 @@ export function AppShell({ sessions, children }: Props) {
           ))}
         </nav>
       </header>
-      <main className="flex-1 overflow-hidden">{children}</main>
+      <main className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</main>
     </div>
   );
 }

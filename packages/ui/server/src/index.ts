@@ -13,6 +13,7 @@ import { registerSourceRoute } from "./routes/source.js";
 import { registerBlameRoute } from "./routes/blame.js";
 import { registerDiffRoute } from "./routes/diff.js";
 import { registerImpactRoute } from "./routes/impact.js";
+import { registerGraphRoute } from "./routes/graph.js";
 import { registerLiveRoute, type LiveBroadcaster } from "./routes/live.js";
 import { registerStatic } from "./static.js";
 
@@ -83,6 +84,7 @@ export async function createServer(
   registerBlameRoute(fastify, sessions);
   registerDiffRoute(fastify, sessions);
   registerImpactRoute(fastify, sessions);
+  registerGraphRoute(fastify, sessions);
 
   if (!opts.dev) {
     await registerStatic(fastify);

@@ -1,6 +1,7 @@
 import type {
   BlameResponse,
   DiffResponse,
+  GraphResponse,
   ImpactRequest,
   ImpactResponse,
   QueryRequest,
@@ -23,6 +24,10 @@ async function j<T>(res: Response): Promise<T> {
 export const api = {
   async sessions(): Promise<SessionsResponse> {
     return j(await fetch(`${BASE}/sessions`));
+  },
+  async graph(sessionId: string, opts: { maxSymbols?: number } = {}): Promise<GraphResponse> {
+    const qs = opts.maxSymbols ? `?maxSymbols=${opts.maxSymbols}` : "";
+    return j(await fetch(`${BASE}/session/${encodeURIComponent(sessionId)}/graph${qs}`));
   },
   async rca(sessionId: string): Promise<RcaSnapshot> {
     return j(await fetch(`${BASE}/session/${encodeURIComponent(sessionId)}/rca`));
