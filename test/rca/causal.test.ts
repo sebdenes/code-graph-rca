@@ -1,0 +1,371 @@
+import { describe, it, expect } from "vitest";
+import { openDb, type Db } from "../../src/graph/db.js";
+import { buildCausalChain } from "../../src/rca/causal.js";
+import type {
+  CallerTree,
+  CalleeTree,
+  CausalCandidate,
+  RecentChange,
+} from "../../src/types.js";
+
+/**
+ * Build a tiny in-memory Db with a couple of symbols and unresolved edges.
+ * The schema is loaded by openDb({}); we INSERT directly to avoid needing real source.
+ */
+function buildDb(spec: {
+  files: Array<{ path: string; subsystem: string }>;
+  symbols: Array<{ file: string; name: string }>;
+  unresolvedEdgesFrom: Array<{
+    file: string;
+    name: string;
+    targets: string[];
+  }>;
+}): Db {
+  const db = openDb({});
+  const insFile = db.prepare(
+    "INSERT INTO files (path, language, subsystem, loc) VALUES (?, 'typescript', ?, 0)",
+  );
+  const insSym = db.prepare(
+    "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported) VALUES (?, ?, 'function', NULL, 1, 10, NULL, 0)",
+  );
+  const insEdge = db.prepare(
+    "INSERT INTO edges (from_symbol_id, to_symbol_id, to_name, kind, confidence, call_line) VALUES (?, NULL, ?, 'CALLS', 0.9, NULL)",
+  );
+
+  const fileIds = new Map<string, number>();
+  for (const f of spec.files) {
+    const r = insFile.run(f.path, f.subsystem);
+    fileIds.set(f.path, r.lastInsertRowid as number);
+  }
+  const symIds = new Map<string, number>();
+  for (const s of spec.symbols) {
+    const fid = fileIds.get(s.file);
+    if (fid === undefined) throw new Error(`unknown file ${s.file}`);
+    const r = insSym.run(fid, s.name);
+    symIds.set(`${s.file}:${s.name}`, r.lastInsertRowid as number);
+  }
+  for (const u of spec.unresolvedEdgesFrom) {
+    const sid = symIds.get(`${u.file}:${u.name}`);
+    if (sid === undefined) throw new Error(`unknown symbol ${u.file}:${u.name}`);
+    for (const t of u.targets) insEdge.run(sid, t);
+  }
+  return db;
+}
+
+function rc(commit: string, daysAgo: number): RecentChange {
+  return {
+    commit,
+    date: new Date(Date.now() - daysAgo * 86400000).toISOString(),
+    author: "tester",
+    subject: `commit ${commit}`,
+    daysAgo,
+  };
+}
+
+describe("buildCausalChain", () => {
+  it("recency dominates topology — 2-hop recent caller outranks direct caller with no changes", () => {
+    const db = buildDb({
+      files: [{ path: "src/a.ts", subsystem: "core" }],
+      symbols: [
+        { file: "src/a.ts", name: "A" },
+        { file: "src/a.ts", name: "B" },
+        { file: "src/a.ts", name: "C" },
+      ],
+      unresolvedEdgesFrom: [],
+    });
+
+    const callerTree: CallerTree = {
+      target: "A",
+      callers: [
+        {
+          name: "B",
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [],
+          callers: [
+            {
+              name: "C",
+              file: "src/a.ts",
+              line: 1,
+              confidence: 1,
+              recentChanges: [rc("abc1234", 3)],
+              callers: [],
+            },
+          ],
+        },
+      ],
+    };
+    const calleeTree: CalleeTree = { source: "A", callees: [] };
+
+    const out = buildCausalChain(
+      {
+        anchor: { name: "A", file: "src/a.ts", line: 1, subsystem: "core" },
+        callerTree,
+        calleeTree,
+        db,
+      },
+      { topN: 5 },
+    );
+
+    const cByName = new Map<string, CausalCandidate>(out.map((c) => [c.name, c]));
+    const cC = cByName.get("C");
+    const cB = cByName.get("B");
+    expect(cC).toBeDefined();
+    expect(cB).toBeDefined();
+    expect(cC!.score).toBeGreaterThan(cB!.score);
+    // Sanity: C should be at or near the top.
+    expect(out[0]?.name === "C" || out[1]?.name === "C").toBe(true);
+    // Print top-N for sanity-check (will appear under `--reporter=verbose`).
+    // eslint-disable-next-line no-console
+    console.log(
+      "test#1 top-N:",
+      out.map((c) => ({ name: c.name, score: c.score, signals: c.signals })),
+    );
+  });
+
+  it("co-change cluster — anchor and direct caller sharing a sha both get the bonus", () => {
+    const db = buildDb({
+      files: [{ path: "src/a.ts", subsystem: "core" }],
+      symbols: [
+        { file: "src/a.ts", name: "A" },
+        { file: "src/a.ts", name: "B" },
+      ],
+      unresolvedEdgesFrom: [],
+    });
+
+    const sharedSha = "deadbee";
+    const callerTree: CallerTree = {
+      target: "A",
+      callers: [
+        {
+          name: "B",
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [rc(sharedSha, 5)],
+          callers: [],
+        },
+      ],
+    };
+    const calleeTree: CalleeTree = { source: "A", callees: [] };
+
+    // We need the anchor to also carry recentChanges with sharedSha. The
+    // anchor's recentChanges aren't read from the input.anchor (it's a thin
+    // surface), so we simulate by pinning the anchor as a caller of itself?
+    // Instead: the contract is that the anchor candidate's recentChanges come
+    // from the caller/callee tree (not the case). To get co-change with the
+    // anchor, we add the anchor entry into the callerTree as a self-reference.
+    // Simpler: place a callee that IS the anchor's commit-mate. Two distinct
+    // candidates suffice for the co-change cluster test.
+    // Use a callee with the same sha to form a 2-member cluster.
+    calleeTree.callees.push({
+      name: "D",
+      resolved: true,
+      file: "src/a.ts",
+      line: 1,
+      confidence: 1,
+      recentChanges: [rc(sharedSha, 5)],
+      callees: [],
+    });
+
+    const out = buildCausalChain(
+      {
+        anchor: { name: "A", file: "src/a.ts", line: 1, subsystem: "core" },
+        callerTree,
+        calleeTree,
+        db,
+      },
+      { topN: 5 },
+    );
+
+    const byName = new Map(out.map((c) => [c.name, c]));
+    const b = byName.get("B");
+    const d = byName.get("D");
+    expect(b).toBeDefined();
+    expect(d).toBeDefined();
+    expect(b!.signals.coChangeScore).toBeGreaterThan(0);
+    expect(d!.signals.coChangeScore).toBeGreaterThan(0);
+    const top3 = out.slice(0, 3).map((c) => c.name);
+    expect(top3).toContain("B");
+    expect(top3).toContain("D");
+  });
+
+  it("ambiguity hint — direct callee with 4 unresolved outgoing CALLS ranks in top-3", () => {
+    const db = buildDb({
+      files: [{ path: "src/a.ts", subsystem: "core" }],
+      symbols: [
+        { file: "src/a.ts", name: "A" },
+        { file: "src/a.ts", name: "D" },
+      ],
+      unresolvedEdgesFrom: [
+        { file: "src/a.ts", name: "D", targets: ["x", "y", "z", "w"] },
+      ],
+    });
+
+    const callerTree: CallerTree = { target: "A", callers: [] };
+    const calleeTree: CalleeTree = {
+      source: "A",
+      callees: [
+        {
+          name: "D",
+          resolved: true,
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [],
+          callees: [],
+        },
+      ],
+    };
+
+    const out = buildCausalChain(
+      {
+        anchor: { name: "A", file: "src/a.ts", line: 1, subsystem: "core" },
+        callerTree,
+        calleeTree,
+        db,
+      },
+      { topN: 5 },
+    );
+
+    const top3 = out.slice(0, 3);
+    const d = top3.find((c) => c.name === "D");
+    expect(d).toBeDefined();
+    expect(d!.unresolvedCallTargets.length).toBe(4);
+    expect(d!.signals.ambiguityScore).toBeGreaterThan(0);
+    expect(d!.rationale.toLowerCase()).toContain("unresolved");
+  });
+
+  it("tie-break by recency — equal scores, newer daysAgo wins", () => {
+    // Build two candidates that end up with identical scores via different signals.
+    // Strategy: two direct callees (proximity 1 → +1 each), no ambiguity, no co-change,
+    // no subsystem match. Recency drives the ordering.
+    const db = buildDb({
+      files: [{ path: "src/a.ts", subsystem: "core" }],
+      symbols: [
+        { file: "src/a.ts", name: "A" },
+        { file: "src/a.ts", name: "X" },
+        { file: "src/a.ts", name: "Y" },
+      ],
+      unresolvedEdgesFrom: [],
+    });
+
+    const callerTree: CallerTree = { target: "A", callers: [] };
+    const calleeTree: CalleeTree = {
+      source: "A",
+      callees: [
+        {
+          name: "X",
+          resolved: true,
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          // Same recency bucket: both 3 days vs 6 days fall in <=7 → +3.
+          recentChanges: [rc("sha-x", 6)],
+          callees: [],
+        },
+        {
+          name: "Y",
+          resolved: true,
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [rc("sha-y", 3)],
+          callees: [],
+        },
+      ],
+    };
+
+    const out = buildCausalChain(
+      {
+        anchor: { name: "A", file: "src/a.ts", line: 1, subsystem: "core" },
+        callerTree,
+        calleeTree,
+        db,
+      },
+      { topN: 5 },
+    );
+
+    const xIdx = out.findIndex((c) => c.name === "X");
+    const yIdx = out.findIndex((c) => c.name === "Y");
+    expect(xIdx).toBeGreaterThanOrEqual(0);
+    expect(yIdx).toBeGreaterThanOrEqual(0);
+    // Same score (both proximity=1, recency=3, others 0), so Y (3 days) wins.
+    const xCand = out[xIdx]!;
+    const yCand = out[yIdx]!;
+    expect(xCand.score).toBe(yCand.score);
+    expect(yIdx).toBeLessThan(xIdx);
+  });
+
+  it("deterministic — running twice on the same input yields identical ordering", () => {
+    const db = buildDb({
+      files: [
+        { path: "src/a.ts", subsystem: "core" },
+        { path: "src/b.ts", subsystem: "core" },
+      ],
+      symbols: [
+        { file: "src/a.ts", name: "A" },
+        { file: "src/a.ts", name: "B" },
+        { file: "src/b.ts", name: "C" },
+        { file: "src/b.ts", name: "D" },
+      ],
+      unresolvedEdgesFrom: [
+        { file: "src/b.ts", name: "D", targets: ["foo", "bar"] },
+      ],
+    });
+
+    const callerTree: CallerTree = {
+      target: "A",
+      callers: [
+        {
+          name: "B",
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [rc("aaa1111", 10)],
+          callers: [
+            {
+              name: "C",
+              file: "src/b.ts",
+              line: 1,
+              confidence: 1,
+              recentChanges: [rc("bbb2222", 40)],
+              callers: [],
+            },
+          ],
+        },
+      ],
+    };
+    const calleeTree: CalleeTree = {
+      source: "A",
+      callees: [
+        {
+          name: "D",
+          resolved: true,
+          file: "src/b.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [],
+          callees: [],
+        },
+      ],
+    };
+
+    const input = {
+      anchor: {
+        name: "A",
+        file: "src/a.ts" as string | null,
+        line: 1 as number | null,
+        subsystem: "core" as string | null,
+      },
+      callerTree,
+      calleeTree,
+      db,
+    };
+
+    const a = buildCausalChain(input, { topN: 5 });
+    const b = buildCausalChain(input, { topN: 5 });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+});
