@@ -34,7 +34,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: sebdenes/code-graph-rca@v0.3.0
+      - uses: sebdenes/code-graph-rca@v0.3.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
