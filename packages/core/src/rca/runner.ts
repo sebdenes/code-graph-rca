@@ -236,11 +236,18 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
   }
 }
 
+/**
+ * Detect whether `repoRoot` is inside a git working tree. Walks parents up
+ * to 12 levels looking for a `.git` entry — the previous version only
+ * checked `repoRoot/.git`, which silently disabled recency hydration when
+ * `--repo` pointed at a monorepo subdir like `packages/core` whose `.git`
+ * lives at the parent root.
+ *
+ * Returns `false` for non-repos, deleted repos, and unreadable paths. Never
+ * throws: a transient FS error here would otherwise sink the whole RCA run,
+ * but recency is best-effort by design.
+ */
 function isGitRepo(repoRoot: string): boolean {
-  // Walk up looking for a .git entry. The previous check only at repoRoot
-  // failed when `--repo` pointed inside a monorepo (e.g. packages/core)
-  // whose .git lives at the parent root, silently disabling all recency
-  // hydration. Walking up makes recency Just Work for any subdir of a repo.
   try {
     let dir = repoRoot;
     for (let i = 0; i < 12; i++) {

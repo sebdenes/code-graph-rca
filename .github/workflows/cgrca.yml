@@ -1,0 +1,44 @@
+# cgrca PR review
+#
+# Drop this file at .github/workflows/cgrca.yml in any repo. On every pull
+# request, cgrca will index the changed scope, rank the most likely root-cause
+# sites, compute the blast radius, and post a single comment that updates in
+# place across PR pushes.
+#
+# Requirements:
+#   - The repo opts in to letting GitHub Actions post PR comments. This is on
+#     by default for repos owned by an account with default Actions permissions.
+#     If your org restricts it, set: Settings → Actions → General →
+#     Workflow permissions → "Read and write permissions".
+#   - Node 20 is installed by the Action automatically; no other prerequisites.
+#
+# Costs: free for public repos. Free minutes apply for private repos under
+# the standard GitHub Actions free tier.
+
+name: cgrca PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  cgrca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # cgrca uses git log -L for the recency signal — we need history,
+          # not just the tip. fetch-depth: 0 fetches everything; reduce if
+          # the repo is enormous and you trust the recent-changes signal less.
+          fetch-depth: 0
+          # Make sure we have the PR's head, not the merge commit.
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: sebdenes/code-graph-rca@v0.3.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
