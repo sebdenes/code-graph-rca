@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import Database from "better-sqlite3";
 import { runRca, type FailureScope } from "./rca/runner.js";
 import { indexScope } from "./graph/orchestrator.js";
 import {
@@ -108,7 +109,37 @@ async function cmdRca(args: ParsedArgs): Promise<number> {
 
   const persist = typeof args.flags.persist === "string" ? args.flags.persist : undefined;
   const result = await runRca({ failureScope: failure, repoRoot, budget, ...(persist ? { persist } : {}) });
-  if (persist) process.stderr.write(`graph persisted to ${resolve(persist)}\n`);
+  if (persist) {
+    const persistAbs = resolve(persist);
+    process.stderr.write(`graph persisted to ${persistAbs}\n`);
+    // Sidecar JSON snapshot of the full RcaResult (lets the UI render any
+    // sqlite without re-running the CLI).
+    try {
+      writeFileSync(`${persistAbs}.rca.json`, JSON.stringify(result, null, 2));
+    } catch (err) {
+      process.stderr.write(
+        `warning: failed to write sidecar json: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+    // Stamp the SQLite with repo_root + primary_symbol so it can be opened
+    // standalone on another machine.
+    try {
+      const stampDb = new Database(persistAbs);
+      stampDb.exec(
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+      );
+      const ins = stampDb.prepare(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+      );
+      ins.run("repo_root", repoRoot);
+      ins.run("primary_symbol", result.primarySymbol ?? "");
+      stampDb.close();
+    } catch (err) {
+      process.stderr.write(
+        `warning: failed to stamp meta: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
 
   if (args.flags.json) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");

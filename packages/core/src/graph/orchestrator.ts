@@ -25,6 +25,14 @@ export interface IndexResult {
 
 export async function indexScope(opts: IndexOptions): Promise<IndexResult> {
   const db = openDb(opts.persist ? { persist: opts.persist } : {});
+  // Stamp repo_root into meta so a moved sqlite is self-describing.
+  try {
+    db.prepare(
+      "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+    ).run("repo_root", opts.repoRoot);
+  } catch {
+    // meta table may not exist on older DBs; ignore.
+  }
   const files = walk(opts.repoRoot, opts);
 
   // Pass 1 — sequential extract. Workers come in slice 3.
