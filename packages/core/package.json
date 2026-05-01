@@ -1,9 +1,35 @@
 {
   "name": "code-graph-rca",
-  "version": "0.0.1",
-  "description": "RCA-specific code knowledge graph for AI coding agents. Session-scoped, in-memory, opinionated.",
+  "version": "0.2.0",
+  "description": "RCA-specific code knowledge graph for AI coding agents. Session-scoped, in-memory, opinionated. Ships an MCP server so any MCP-aware agent (Cursor, Claude Code, Cody, Cline, Continue, Windsurf, Zed) gets cgrca natively.",
   "type": "module",
   "license": "MIT",
+  "author": "Sebastien Denes",
+  "homepage": "https://github.com/sebastiendenes/code-graph-rca#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sebastiendenes/code-graph-rca.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/sebastiendenes/code-graph-rca/issues"
+  },
+  "keywords": [
+    "rca",
+    "root-cause-analysis",
+    "code-graph",
+    "knowledge-graph",
+    "mcp",
+    "model-context-protocol",
+    "tree-sitter",
+    "ai-agent",
+    "claude-code",
+    "cursor",
+    "static-analysis",
+    "call-graph",
+    "typescript",
+    "python"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -23,7 +49,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

@@ -1,9 +1,30 @@
 {
   "name": "code-graph-rca-ui",
-  "version": "0.0.1",
-  "description": "Web UI for code-graph-rca: visualize the failure graph and downstream impact.",
+  "version": "0.2.0",
+  "description": "Web UI for code-graph-rca: Constellation-style force-directed graph view, Monaco code inspector, RCA + Impact tabs.",
   "type": "module",
   "license": "MIT",
+  "author": "Sebastien Denes",
+  "homepage": "https://github.com/sebastiendenes/code-graph-rca#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sebastiendenes/code-graph-rca.git",
+    "directory": "packages/ui"
+  },
+  "bugs": {
+    "url": "https://github.com/sebastiendenes/code-graph-rca/issues"
+  },
+  "keywords": [
+    "code-graph",
+    "knowledge-graph",
+    "rca",
+    "visualization",
+    "cytoscape",
+    "monaco",
+    "react",
+    "ai-agent",
+    "developer-tools"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -11,6 +32,12 @@
     "cgrca-view": "./dist/server/src/cli.js"
   },
   "main": "./dist/server/src/index.js",
+  "files": [
+    "dist",
+    "shared",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "npm run build:web && npm run build:server",
     "build:server": "tsc -p server/tsconfig.json",
@@ -19,10 +46,11 @@
     "dev:server": "tsx watch server/src/cli.ts --dev",
     "dev:web": "vite -c web/vite.config.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit"
+    "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
-    "code-graph-rca": "*",
+    "code-graph-rca": "^0.2.0",
     "@fastify/static": "^8.0.0",
     "@fastify/websocket": "^11.0.0",
     "better-sqlite3": "^11.3.0",
