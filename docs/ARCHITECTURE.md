@@ -1,6 +1,20 @@
 # Architecture
 
-This document describes the design of `code-graph-rca` and the choices that shape it. The tool exists for one job: helping an AI coding agent do root-cause analysis on a specific bug. Every design decision is judged against that job, not against general-purpose code search.
+This document describes the design of `code-graph-rca` and the choices that shape it.
+
+## What this is
+
+`cgrca` is **RCA infrastructure for AI-built code** — code knowledge graph + opinionated RCA engine + visual graph explorer, designed for the world where most code is written with AI assistance and the bugs the agent ships are bugs the agent has to debug.
+
+It is not a one-tool-one-job utility. It is a substrate with three deliberate distribution surfaces, each addressing a different point in the AI-coding pipeline:
+
+1. **An MCP server** — every MCP-aware agent (Cursor, Claude Code, Cody, Cline, Continue, Windsurf, Zed) speaks it natively. One server, every editor, no per-vendor adapter. MCP is the cross-vendor open standard; cgrca's primary surface area is here.
+2. **A CLI** — for direct use, CI integration, scripting, and as the engine the MCP server fronts.
+3. **A web UI** (the *Constellation*) — for visual exploration of the indexed graph, the ranked causal candidates, and the impact analysis. Standalone product, useful even when no agent is in the loop.
+
+The core engine is RCA-centric, but RCA is the wedge — the same graph and queries are equally good for code review (impact analysis on a PR), for "what calls this" reasoning during refactors, and for grounding any agent's structural claims about a codebase. The MCP surface makes those uses available across the whole AI-coding ecosystem from a single install.
+
+Every design decision below is judged against this broader role, not against narrow code search.
 
 ## The scope-then-index bet
 

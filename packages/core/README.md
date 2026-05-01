@@ -1,8 +1,16 @@
 # code-graph-rca
 
-RCA-specific code knowledge graph for AI coding agents. Session-scoped, in-memory, opinionated.
+**RCA infrastructure for AI-built code.** Code knowledge graph + opinionated RCA engine, designed for the world where most code is written with AI assistance and the bugs the agent ships are bugs the agent has to debug.
 
-When an AI agent investigates a bug, it reads files one at a time and infers structure from filenames and imports. It misses dependencies, breaking changes, and the actual call site of the failure. cgrca fixes that. Given a failure (a stack trace, a failing test, a symbol, or a file), it walks outward to a bounded scope, parses just those files with tree-sitter into in-memory SQLite, and exposes structural facts the agent can reason against.
+cgrca exposes structural facts about a codebase — definitions, callers, callees, recent changes, blast radius, ranked causal candidates — through three surfaces:
+
+- **An MCP server** — every MCP-aware agent (Cursor, Claude Code, Cody, Cline, Continue, Windsurf, Zed) speaks it natively. One install covers the whole AI-coding ecosystem.
+- **A CLI** — for direct use, CI integration, scripting.
+- **A library** — `import { runRca, indexScope, definitionOf, callersOf, ... } from "code-graph-rca"` — the same engine the MCP server and CLI front.
+
+The graph is built fresh per invocation from a *failure scope* (a stack trace, a failing test, a symbol, a file) — bounded BFS over imports plus reverse callers, hard LOC budget, in-memory SQLite. Sub-second on most failure neighborhoods, no daemon, no persistent index, no staleness. The bet: the agent already knows where to start looking; cgrca's job is to give it the structural truth about that neighborhood, not to know everything about the whole repo.
+
+For visual exploration of the graph, see the companion package [`code-graph-rca-ui`](https://www.npmjs.com/package/code-graph-rca-ui) which ships `cgrca-view` (Constellation graph + Monaco inspector + RCA + Impact tabs).
 
 ## Install
 
