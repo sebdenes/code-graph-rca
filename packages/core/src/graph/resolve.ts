@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import type { Db } from "./db.js";
+import { isStdlibName } from "../rca/stdlib-names.js";
 
 interface FileRow {
   id: number;
@@ -72,6 +73,135 @@ export function resolveEdges(db: Db, repoRoot: string): void {
   db.prepare(
     "UPDATE edges SET confidence = 0.5 WHERE to_symbol_id IS NULL AND kind = 'CALLS' AND confidence > 0.5",
   ).run();
+
+  // 5. Classify unresolved edges with resolution_kind so downstream stages
+  // (LLM prompts, scoring, ambiguity counts) can treat stdlib / external pkg
+  // / instance method / truly-missing differently. Without this, every
+  // unresolved edge is indistinguishable at confidence=0.5.
+  classifyUnresolved(db, repoRoot, filesById);
+}
+
+function classifyUnresolved(
+  db: Db,
+  repoRoot: string,
+  filesById: Map<number, FileRow>,
+): void {
+  // Pull every unresolved CALLS edge along with the file the call originates
+  // from, so we can apply per-file imports + per-line source heuristics.
+  const rows = db
+    .prepare(
+      `SELECT e.id AS id, e.to_name AS to_name, e.call_line AS call_line,
+              fs.file_id AS file_id
+         FROM edges e
+         JOIN symbols fs ON fs.id = e.from_symbol_id
+        WHERE e.to_symbol_id IS NULL
+          AND e.kind = 'CALLS'`,
+    )
+    .all() as Array<{
+      id: number;
+      to_name: string;
+      call_line: number | null;
+      file_id: number;
+    }>;
+
+  if (rows.length === 0) return;
+
+  // file_id -> Map<local_name, source_module>
+  const importsByFile = new Map<number, Map<string, string>>();
+  const importRows = db
+    .prepare("SELECT file_id, local_name, source_module FROM imports")
+    .all() as Array<{ file_id: number; local_name: string; source_module: string }>;
+  for (const r of importRows) {
+    let m = importsByFile.get(r.file_id);
+    if (!m) {
+      m = new Map();
+      importsByFile.set(r.file_id, m);
+    }
+    m.set(r.local_name, r.source_module);
+  }
+
+  // Cache file source by file_id; only loaded when needed for the
+  // instance_method heuristic.
+  const sourceCache = new Map<number, string[] | null>();
+  function getLine(fileId: number, lineNum: number | null): string | null {
+    if (lineNum === null || lineNum <= 0) return null;
+    let lines = sourceCache.get(fileId);
+    if (lines === undefined) {
+      const f = filesById.get(fileId);
+      if (!f) {
+        sourceCache.set(fileId, null);
+        return null;
+      }
+      try {
+        const text = readFileSync(join(repoRoot, f.path), "utf8");
+        lines = text.split(/\r?\n/);
+      } catch {
+        lines = null;
+      }
+      sourceCache.set(fileId, lines);
+    }
+    if (!lines) return null;
+    return lines[lineNum - 1] ?? null;
+  }
+
+  const update = db.prepare(
+    "UPDATE edges SET resolution_kind = ? WHERE id = ?",
+  );
+
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      const kind = classifyOne(
+        r.to_name,
+        r.file_id,
+        r.call_line,
+        importsByFile,
+        getLine,
+      );
+      update.run(kind, r.id);
+    }
+  });
+  tx();
+}
+
+/**
+ * Classify a single unresolved CALLS edge. Order matters: stdlib first
+ * (cheapest, highest precision), then external_module (import-table
+ * lookup), then instance_method (source-line heuristic — approximate:
+ * misses multi-line chained calls and may misfire on `obj.foo()` where
+ * `foo` happens to also be a free function. Acceptable: classification
+ * quality > NULL).
+ */
+function classifyOne(
+  toName: string,
+  fileId: number,
+  callLine: number | null,
+  importsByFile: Map<number, Map<string, string>>,
+  getLine: (fileId: number, lineNum: number | null) => string | null,
+): "stdlib" | "external_module" | "instance_method" | "unknown" {
+  if (isStdlibName(toName)) return "stdlib";
+
+  const imports = importsByFile.get(fileId);
+  if (imports) {
+    const sourceMod = imports.get(toName);
+    if (sourceMod && !sourceMod.startsWith(".")) {
+      return "external_module";
+    }
+  }
+
+  // Heuristic: if the call-line text contains `.${to_name}(`, it's a method
+  // call on some receiver expression. Approximate — cannot identify the
+  // receiver type, just that this is dispatched off `.`.
+  const line = getLine(fileId, callLine);
+  if (line !== null) {
+    // Escape regex metacharacters in to_name (identifiers shouldn't have
+    // any, but be defensive).
+    const safe = toName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`\\.${safe}\\s*\\(`).test(line)) {
+      return "instance_method";
+    }
+  }
+
+  return "unknown";
 }
 
 function resolveSelfMethods(db: Db): void {

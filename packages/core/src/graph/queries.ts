@@ -228,7 +228,7 @@ function walkDown(
 
   const rows = db
     .prepare(
-      `SELECT e.to_name, e.to_symbol_id, e.confidence, e.call_line, f.path AS to_path
+      `SELECT e.to_name, e.to_symbol_id, e.confidence, e.call_line, e.resolution_kind, f.path AS to_path
          FROM edges e
          LEFT JOIN symbols s ON s.id = e.to_symbol_id
          LEFT JOIN files f ON f.id = s.file_id
@@ -240,6 +240,7 @@ function walkDown(
       to_symbol_id: number | null;
       confidence: number;
       call_line: number | null;
+      resolution_kind: import("../types.js").ResolutionKind | null;
       to_path: string | null;
     }>;
 
@@ -253,6 +254,7 @@ function walkDown(
         file: r.to_path,
         line: r.call_line,
         confidence: r.confidence,
+        resolutionKind: r.resolution_kind,
         callees: [],
       };
       seen.set(key, node);

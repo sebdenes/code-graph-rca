@@ -14,8 +14,11 @@ const SCHEMA_PATH = join(here, "schema.sql");
  *
  * - v1: initial shape shipped through v0.3.x (no `schema_version` row).
  * - v2: same shape; first version that stamps `schema_version` into meta.
+ * - v3: edges gains `resolution_kind` column so unresolved CALLS edges can
+ *   distinguish stdlib / external_module / instance_method / unknown
+ *   instead of all collapsing onto confidence=0.5.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export type Db = Database.Database;
 

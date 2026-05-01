@@ -73,6 +73,30 @@ describe("openDb schema versioning", () => {
     }
   });
 
+  it("asserts current SCHEMA_VERSION is 3", () => {
+    expect(SCHEMA_VERSION).toBe(3);
+  });
+
+  it("rejects a v2 persisted DB so re-index is forced", () => {
+    const { path, cleanup } = tmpDbPath();
+    try {
+      const seed = new Database(path);
+      seed.exec(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+      );
+      seed
+        .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '2')")
+        .run();
+      seed.close();
+
+      expect(() => openDb({ persist: path })).toThrowError(
+        /has schema v2, this binary expects v3\. Re-index by deleting the file\./,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
   it("backfills schema_version on a legacy file with meta but no row", () => {
     const { path, cleanup } = tmpDbPath();
     try {

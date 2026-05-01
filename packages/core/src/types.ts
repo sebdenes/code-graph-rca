@@ -33,6 +33,12 @@ export interface SymbolRow {
   exported: 0 | 1;
 }
 
+export type ResolutionKind =
+  | "stdlib"
+  | "external_module"
+  | "instance_method"
+  | "unknown";
+
 export interface EdgeRow {
   id: number;
   from_symbol_id: number;
@@ -41,6 +47,7 @@ export interface EdgeRow {
   kind: EdgeKind;
   confidence: number;
   call_line: number | null;
+  resolution_kind: ResolutionKind | null;
 }
 
 export interface ImportRow {
@@ -129,6 +136,12 @@ export interface CalleeNode {
   file: string | null;
   line: number | null;
   confidence: number;
+  /**
+   * For unresolved callees, why we couldn't resolve them. Null for resolved
+   * edges. Lets downstream scoring/LLM stages distinguish stdlib noise from
+   * truly missing symbols.
+   */
+  resolutionKind?: ResolutionKind | null;
   /** Populated when caller/callee queries are run with hydrateRecency. */
   recentChanges?: RecentChange[];
   callees: CalleeNode[];
@@ -166,6 +179,7 @@ export interface CausalCandidate {
     ambiguityScore: number;
     coChangeScore: number;
     subsystemScore: number;
+    complexityScore: number;
   };
   /** Human-readable rationale, one sentence. */
   rationale: string;

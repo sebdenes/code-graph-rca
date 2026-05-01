@@ -156,15 +156,11 @@ describe("buildCausalChain", () => {
     };
     const calleeTree: CalleeTree = { source: "A", callees: [] };
 
-    // We need the anchor to also carry recentChanges with sharedSha. The
-    // anchor's recentChanges aren't read from the input.anchor (it's a thin
-    // surface), so we simulate by pinning the anchor as a caller of itself?
-    // Instead: the contract is that the anchor candidate's recentChanges come
-    // from the caller/callee tree (not the case). To get co-change with the
-    // anchor, we add the anchor entry into the callerTree as a self-reference.
-    // Simpler: place a callee that IS the anchor's commit-mate. Two distinct
-    // candidates suffice for the co-change cluster test.
-    // Use a callee with the same sha to form a 2-member cluster.
+    // The anchor carries the same sha so the cluster is anchored — required
+    // by the gate that drops 2-member non-anchor clusters as megacommit noise.
+    // A callee D with the same sha rounds out the cluster (3 members total),
+    // which both proves the bonus propagates and exercises the path where
+    // anchor membership is the cluster's reason for surviving.
     calleeTree.callees.push({
       name: "D",
       resolved: true,
@@ -177,7 +173,13 @@ describe("buildCausalChain", () => {
 
     const out = buildCausalChain(
       {
-        anchor: { name: "A", file: "src/a.ts", line: 1, subsystem: "core" },
+        anchor: {
+          name: "A",
+          file: "src/a.ts",
+          line: 1,
+          subsystem: "core",
+          recentChanges: [rc(sharedSha, 5)],
+        },
         callerTree,
         calleeTree,
         db,
@@ -373,5 +375,145 @@ describe("buildCausalChain", () => {
     const a = buildCausalChain(input, { topN: 5 });
     const b = buildCausalChain(input, { topN: 5 });
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it("megacommit bystander does NOT beat the anchor", () => {
+    // Anchor A and a direct callee D both touched in the SAME megacommit, plus
+    // ten other bystanders touched in that commit (12-member cluster). With the
+    // demoted co-change weight (per-member ~ 2 / log2(13) ≈ 0.54) the bystander
+    // cannot leapfrog the anchor's recency 3 + proximity 2.5 = 5.5.
+    const filesSpec: Array<{ path: string; subsystem: string }> = [
+      { path: "src/a.ts", subsystem: "core" },
+    ];
+    const symbolsSpec: Array<{ file: string; name: string }> = [
+      { file: "src/a.ts", name: "A" },
+      { file: "src/a.ts", name: "D" },
+    ];
+    for (let i = 0; i < 10; i++) {
+      symbolsSpec.push({ file: "src/a.ts", name: `bystander${i}` });
+    }
+    const db = buildDb({
+      files: filesSpec,
+      symbols: symbolsSpec,
+      unresolvedEdgesFrom: [],
+    });
+
+    const mega = "megac0m";
+    const callees = [
+      {
+        name: "D",
+        resolved: true,
+        file: "src/a.ts",
+        line: 1,
+        confidence: 1,
+        recentChanges: [rc(mega, 3)],
+        callees: [],
+      },
+    ];
+    for (let i = 0; i < 10; i++) {
+      callees.push({
+        name: `bystander${i}`,
+        resolved: true,
+        file: "src/a.ts",
+        line: 1,
+        confidence: 1,
+        recentChanges: [rc(mega, 3)],
+        callees: [],
+      });
+    }
+    const calleeTree: CalleeTree = { source: "A", callees };
+    const callerTree: CallerTree = { target: "A", callers: [] };
+
+    const out = buildCausalChain(
+      {
+        anchor: {
+          name: "A",
+          file: "src/a.ts",
+          line: 1,
+          subsystem: "core",
+          recentChanges: [rc(mega, 3)],
+        },
+        callerTree,
+        calleeTree,
+        db,
+      },
+      { topN: 12 },
+    );
+
+    const byName = new Map(out.map((c) => [c.name, c]));
+    const a = byName.get("A");
+    const d = byName.get("D");
+    expect(a).toBeDefined();
+    expect(d).toBeDefined();
+    expect(a!.score).toBeGreaterThan(d!.score);
+    expect(out[0]?.name).toBe("A");
+    // The demoted per-cluster contribution must be well below the old +2.
+    expect(d!.signals.coChangeScore).toBeLessThan(1.0);
+  });
+
+  it("complexity bonus pushes a fat orchestrator above its tiny callee", () => {
+    // Two direct callees, neither changed recently and no co-change.
+    // FAT has 400 lines, TINY has 5 lines. With identical recency/proximity,
+    // FAT's complexity bonus (~ log2(21) * 0.6 ≈ 1.5) beats TINY's (~0.22).
+    const db = openDb({});
+    const insFile = db.prepare(
+      "INSERT INTO files (path, language, subsystem, loc) VALUES (?, 'typescript', ?, 0)",
+    );
+    const insSym = db.prepare(
+      "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported) VALUES (?, ?, 'function', NULL, ?, ?, NULL, 0)",
+    );
+    const fid = insFile.run("src/a.ts", "core").lastInsertRowid as number;
+    insSym.run(fid, "A", 1, 5);
+    insSym.run(fid, "TINY", 1, 5); // loc = 5
+    insSym.run(fid, "FAT", 1, 400); // loc = 400
+
+    const callerTree: CallerTree = { target: "A", callers: [] };
+    const calleeTree: CalleeTree = {
+      source: "A",
+      callees: [
+        {
+          name: "TINY",
+          resolved: true,
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [],
+          callees: [],
+        },
+        {
+          name: "FAT",
+          resolved: true,
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [],
+          callees: [],
+        },
+      ],
+    };
+
+    const out = buildCausalChain(
+      {
+        anchor: { name: "A", file: "src/a.ts", line: 1, subsystem: "core" },
+        callerTree,
+        calleeTree,
+        db,
+      },
+      { topN: 5 },
+    );
+
+    const byName = new Map(out.map((c) => [c.name, c]));
+    const fat = byName.get("FAT");
+    const tiny = byName.get("TINY");
+    expect(fat).toBeDefined();
+    expect(tiny).toBeDefined();
+    expect(fat!.signals.complexityScore).toBeGreaterThan(
+      tiny!.signals.complexityScore,
+    );
+    expect(fat!.score).toBeGreaterThan(tiny!.score);
+    // FAT must outrank TINY in the listing.
+    const fatIdx = out.findIndex((c) => c.name === "FAT");
+    const tinyIdx = out.findIndex((c) => c.name === "TINY");
+    expect(fatIdx).toBeLessThan(tinyIdx);
   });
 });

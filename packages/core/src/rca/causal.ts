@@ -63,7 +63,7 @@ const RECENCY_BUCKET_7 = 3;
 const RECENCY_BUCKET_30 = 2;
 const RECENCY_BUCKET_90 = 1;
 
-const PROXIMITY_ANCHOR = 1.5;
+const PROXIMITY_ANCHOR = 2.5;
 const PROXIMITY_DIRECT = 1;
 const PROXIMITY_TWO_HOP = 0.5;
 
@@ -75,6 +75,8 @@ const COCHANGE_PER_CLUSTER = 2;
 const COCHANGE_CAP = 3;
 
 const SUBSYSTEM_MATCH = 0.5;
+
+const COMPLEXITY_MAX = 1.5;
 
 const DEFAULT_RECENCY_DAYS = 90;
 const DEFAULT_TOP_N = 5;
@@ -131,12 +133,19 @@ export function buildCausalChain(
         ? SUBSYSTEM_MATCH
         : 0;
 
+    const loc = locByKey.get(c.key) ?? 0;
+    const complexityScore =
+      loc && loc > 0
+        ? Math.min(Math.log2(loc / 20 + 1) * 0.6, COMPLEXITY_MAX)
+        : 0;
+
     const score =
       recencyScore +
       proximityScore +
       ambiguityScore +
       coChangeScore +
-      subsystemScore;
+      subsystemScore +
+      complexityScore;
 
     const signals = {
       recencyScore,
@@ -144,6 +153,7 @@ export function buildCausalChain(
       ambiguityScore,
       coChangeScore,
       subsystemScore,
+      complexityScore,
     };
 
     const rationale = buildRationale(c, signals, unresolved);
@@ -304,7 +314,9 @@ function computeCoChange(
 ): Map<string, number> {
   // Group candidates by sha (within recencyDays). A sha shared by >=2 candidates → cluster.
   const shaToKeys = new Map<string, Set<string>>();
+  const candidatesByKey = new Map<string, RawCandidate>();
   for (const c of candidates) {
+    candidatesByKey.set(c.key, c);
     for (const ch of c.recentChanges) {
       if (ch.daysAgo > recencyDays) continue;
       let set = shaToKeys.get(ch.commit);
@@ -319,9 +331,19 @@ function computeCoChange(
   const bonus = new Map<string, number>();
   for (const [, keys] of shaToKeys) {
     if (keys.size < 2) continue;
+    // Gate: only cluster if anchor is one of the keys OR cluster size >= 3.
+    const hasAnchor = [...keys].some(
+      (k) => candidatesByKey.get(k)?.role === "anchor",
+    );
+    if (!hasAnchor && keys.size < 3) continue;
+    // Demote co-change in megacommits: a sha touching N candidates contributes
+    // COCHANGE_PER_CLUSTER / log2(N+1) per candidate, not the full per-cluster
+    // amount. A 2-candidate cluster still gets ~+1.26; a 12-candidate megacommit
+    // contributes ~+0.55 each.
+    const perCluster = COCHANGE_PER_CLUSTER / Math.log2(keys.size + 1);
     for (const key of keys) {
       const existing = bonus.get(key) ?? 0;
-      const next = Math.min(existing + COCHANGE_PER_CLUSTER, COCHANGE_CAP);
+      const next = Math.min(existing + perCluster, COCHANGE_CAP);
       bonus.set(key, next);
     }
   }
@@ -347,6 +369,7 @@ function buildRationale(
     ambiguityScore: number;
     coChangeScore: number;
     subsystemScore: number;
+    complexityScore: number;
   },
   unresolved: string[],
 ): string {

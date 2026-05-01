@@ -35,7 +35,12 @@ CREATE TABLE IF NOT EXISTS edges (
   to_name TEXT NOT NULL,
   kind TEXT NOT NULL,
   confidence REAL NOT NULL DEFAULT 1.0,
-  call_line INTEGER
+  call_line INTEGER,
+  -- NULL for resolved edges. For unresolved CALLS edges, classifies *why*
+  -- we couldn't resolve: 'stdlib' | 'external_module' | 'instance_method' | 'unknown'.
+  -- Lets the LLM and scorer treat "we know this is `len`" differently from
+  -- "no idea what this is".
+  resolution_kind TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_symbol_id);
