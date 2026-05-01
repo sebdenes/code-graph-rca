@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -33,8 +35,19 @@ describe("cli smoke", () => {
     expect(r.stdout).toContain("function login");
   });
 
-  it("rca symbol:ingest on py-package emits prompt with the protocol", () => {
+  it("rca default emits the ranked candidate table", () => {
     const r = run(["rca", "symbol:ingest", "--repo", PY_FIXTURE]);
+    expect(r.status).toBe(0);
+    // Default human output is the compact table — not the markdown prompt.
+    expect(r.stdout).toContain("CGRCA");
+    expect(r.stdout).toContain("anchor:");
+    expect(r.stdout).toContain("ingest");
+    expect(r.stdout).not.toContain("Root-cause-analysis protocol");
+    expect(r.stdout).toContain("--prompt");
+  });
+
+  it("rca --prompt on py-package emits the legacy markdown protocol", () => {
+    const r = run(["rca", "symbol:ingest", "--repo", PY_FIXTURE, "--prompt"]);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("Failure context");
     expect(r.stdout).toContain("Graph context");
@@ -55,5 +68,30 @@ describe("cli smoke", () => {
     const r = run(["bogus"]);
     expect(r.status).toBe(2);
     expect(r.stderr).toContain("unknown command");
+  });
+
+  it("define --persist reuses the existing sqlite on warm calls", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cgrca-persist-"));
+    const sqlitePath = join(dir, "graph.sqlite");
+    try {
+      // Cold: build & persist the graph.
+      const cold = run(["define", "login", "--repo", TS_FIXTURE, "--persist", sqlitePath]);
+      expect(cold.status).toBe(0);
+      expect(existsSync(sqlitePath)).toBe(true);
+      expect(cold.stdout).toContain("login.ts");
+
+      // Warm: reuse the persisted graph. The wall clock includes npx/tsx
+      // boot, so the bound is loose; but if --persist reuse regresses,
+      // this re-indexes and athlai-scale repos blow well past 500ms.
+      const t0 = Date.now();
+      const warm = run(["define", "login", "--repo", TS_FIXTURE, "--persist", sqlitePath]);
+      const elapsed = Date.now() - t0;
+      expect(warm.status).toBe(0);
+      expect(warm.stdout).toContain("login.ts");
+      // Generous on the tiny ts-monorepo fixture; the real win shows on big repos.
+      expect(elapsed).toBeLessThan(2_500);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

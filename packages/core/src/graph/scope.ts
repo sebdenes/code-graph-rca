@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statSync, existsSync } from "node:fs";
 import { join, dirname, relative, sep, posix } from "node:path";
 import { languageOf } from "./walker.js";
 
@@ -41,19 +41,36 @@ const safeSize = (abs: string): number => { try { return statSync(abs).size; } c
 
 interface PkgEntry { name: string; dir: string }
 
-function scanRepo(repoRoot: string): {
+function scanRepo(repoRoot: string, fileCap?: number): {
   files: string[];
   packages: PkgEntry[];
   pyPackages: Map<string, string>;
+  truncated: boolean;
 } {
   const files: string[] = [];
   const packages: PkgEntry[] = [];
   // dirs that contain __init__.py — used to detect Python top-level packages.
   const dirsWithInit = new Set<string>();
+  // Cap is applied DURING the walk, not after, so a repo with 100k+ files
+  // does not block the event loop on every tool call. The cap is the budget
+  // for incidentally-discovered files; explicit seeds (resolved via
+  // existsSync elsewhere) are not gated by this scan limit.
+  const cap = typeof fileCap === "number" && fileCap > 0 ? fileCap : Infinity;
+  let truncated = false;
+  // Track resolved real paths to break symlink loops (`ln -s . loop`) and
+  // sort entries lex so two clones produce identical traversal order.
+  const seenDirs = new Set<string>();
   const visit = (absDir: string): void => {
+    if (files.length >= cap) { truncated = true; return; }
+    let real: string;
+    try { real = realpathSync(absDir); } catch { return; }
+    if (seenDirs.has(real)) return;
+    seenDirs.add(real);
     let entries;
     try { entries = readdirSync(absDir, { withFileTypes: true }); } catch { return; }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const ent of entries) {
+      if (files.length >= cap) { truncated = true; return; }
       const abs = join(absDir, ent.name);
       if (ent.isDirectory()) {
         if (!IGNORE_DIRS.has(ent.name)) visit(abs);
@@ -89,7 +106,7 @@ function scanRepo(repoRoot: string): {
       if (!existing || dir.length < existing.length) pyPackages.set(pkgName, dir);
     }
   }
-  return { files, packages, pyPackages };
+  return { files, packages, pyPackages, truncated };
 }
 
 function tryFiles(repoRoot: string, candidates: string[]): string | null {
@@ -264,7 +281,13 @@ export function resolveScope(
   const maxLoc = budget.maxLoc ?? 20000;
   const maxDepth = budget.maxDepth ?? 2;
   const notes: string[] = [];
-  const { files: allFiles, packages, pyPackages } = scanRepo(repoRoot);
+  // Pass a budget into the scan so the directory walk stops early on huge
+  // repos. Cap at a generous multiple of maxFiles so findCallers /
+  // findSymbolFiles still have a healthy candidate pool, while bounding
+  // work to O(maxFiles) instead of O(repo size).
+  const scanCap = Math.max(maxFiles * 4, 500);
+  const { files: allFiles, packages, pyPackages, truncated } = scanRepo(repoRoot, scanCap);
+  if (truncated) notes.push(`repo scan truncated at ${scanCap} files (maxFiles=${maxFiles})`);
   const seeds: string[] = [];
   let primarySymbol: string | null = null;
 

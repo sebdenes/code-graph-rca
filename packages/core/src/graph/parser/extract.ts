@@ -1,5 +1,5 @@
 import Parser from "web-tree-sitter";
-import { loadLanguage, loadQuery, newParser } from "./loader.js";
+import { getCompiledQuery, loadLanguage, newParser } from "./loader.js";
 import type {
   ExtractedEdge,
   ExtractedFile,
@@ -84,8 +84,7 @@ export async function extractFile(opts: {
   const lang = await loadLanguage(grammar);
   const parser = newParser(lang);
   const tree = parser.parse(opts.source);
-  const querySrc = loadQuery(queryNameForGrammar(grammar));
-  const query = lang.query(querySrc);
+  const query = getCompiledQuery(lang, queryNameForGrammar(grammar));
   const matches = query.matches(tree.rootNode);
 
   const symbolsByKey = new Map<string, SymbolWithRange>();
@@ -224,7 +223,7 @@ export async function extractFile(opts: {
   };
 
   tree.delete();
-  query.delete();
+  // query is cached at module level; do not delete.
   parser.delete();
   return out;
 }

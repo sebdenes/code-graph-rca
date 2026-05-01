@@ -5,7 +5,7 @@
  * speaks JSON-RPC over stdio: initialize → tools/list → call cgrca_definitionOf.
  * Validates the contract any MCP client (Cursor, Claude Code, etc.) will see.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -140,4 +140,97 @@ describe("mcp server: stdio round-trip", () => {
       client.close();
     }
   }, 60_000);
+});
+
+/**
+ * Race regression test.
+ *
+ * Before the fix, two concurrent `ensureIndex` calls for the same repoRoot
+ * each invoked `indexScope` and the second `db.close()`-ed the first
+ * mid-flight ("Db is closed" / silent corruption). After the fix,
+ * concurrent callers must share a single in-flight promise and
+ * `indexScope` must run exactly once per repoRoot.
+ */
+describe("mcp server: indexScope singleton race", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../../src/graph/orchestrator.js");
+  });
+
+  it("two concurrent ensureIndex calls for the same repo invoke indexScope exactly once", async () => {
+    let calls = 0;
+    let resolveIndex: ((v: unknown) => void) | null = null;
+    const indexPromise = new Promise((res) => {
+      resolveIndex = res;
+    });
+
+    vi.doMock("../../src/graph/orchestrator.js", () => ({
+      indexScope: vi.fn(async () => {
+        calls += 1;
+        await indexPromise;
+        return {
+          // A close-able stub is enough — _resetCache will call .close().
+          db: { close: () => {} } as unknown,
+          fileCount: 0,
+          symbolCount: 1,
+          edgeCount: 2,
+          importCount: 0,
+          unparsedCount: 0,
+        };
+      }),
+    }));
+
+    const mod = await import("../../src/mcp/server.js");
+    await mod._resetCache();
+
+    // Fire concurrently — both must observe the same in-flight promise.
+    const a = mod._ensureIndex("/tmp/repo-A");
+    const b = mod._ensureIndex("/tmp/repo-A");
+
+    // Let both calls reach the cache check before indexScope settles.
+    await new Promise((r) => setImmediate(r));
+    resolveIndex!(undefined);
+
+    const [ha, hb] = await Promise.all([a, b]);
+    expect(calls).toBe(1);
+    expect(ha).toBe(hb); // same handle — same DB, no double-indexing
+    expect(ha.symbolCount).toBe(1);
+
+    await mod._resetCache();
+  }, 10_000);
+
+  it("different repoRoots get independent entries; old entry is closed after settle", async () => {
+    const closes: string[] = [];
+    let calls = 0;
+
+    vi.doMock("../../src/graph/orchestrator.js", () => ({
+      indexScope: vi.fn(async (opts: { repoRoot: string }) => {
+        calls += 1;
+        return {
+          db: { close: () => closes.push(opts.repoRoot) } as unknown,
+          fileCount: 0,
+          symbolCount: 0,
+          edgeCount: 0,
+          importCount: 0,
+          unparsedCount: 0,
+        };
+      }),
+    }));
+
+    const mod = await import("../../src/mcp/server.js");
+    await mod._resetCache();
+
+    await mod._ensureIndex("/tmp/repo-A");
+    await mod._ensureIndex("/tmp/repo-B");
+    // Give the deferred close() microtask a chance to run.
+    await new Promise((r) => setImmediate(r));
+
+    expect(calls).toBe(2);
+    expect(closes).toEqual(["/tmp/repo-A"]); // old repo's DB closed after settle
+
+    await mod._resetCache();
+  }, 10_000);
 });

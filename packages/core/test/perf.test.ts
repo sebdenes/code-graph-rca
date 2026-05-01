@@ -13,9 +13,9 @@ import { definitionOf, callersOf, calleesOf, symbolsInFile } from "../src/graph/
  *   - indexing 10k LOC < 5s
  *   - in-DB queries < 50ms
  */
-function buildSyntheticRepo(): string {
+function buildSyntheticRepo(opts: { fileCount?: number } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "cgrca-perf-"));
-  const fileCount = 100;
+  const fileCount = opts.fileCount ?? 100;
   for (let i = 0; i < fileCount; i++) {
     const next = (i + 1) % fileCount;
     const lines: string[] = [];
@@ -63,4 +63,25 @@ describe("perf smoke (10k LOC)", () => {
 
     r.db.close();
   });
+});
+
+/**
+ * 50k LOC scope: 500 TS files * ~100 LOC each. Sized to catch query-compile
+ * cache regressions — the per-file `lang.query(querySrc)` recompile was 6ms
+ * apiece, accumulating to seconds at this scale. With caching we expect
+ * indexing to stay well under 8s on dev hardware.
+ */
+describe("perf regression (50k LOC, query-compile cache)", () => {
+  it("indexes 500 files under 8s", async () => {
+    const root = buildSyntheticRepo({ fileCount: 500 });
+    const t0 = performance.now();
+    const r = await indexScope({ repoRoot: root });
+    const indexMs = performance.now() - t0;
+
+    expect(r.fileCount).toBe(501); // 500 .ts + tsconfig.json (unparsed)
+    expect(r.symbolCount).toBeGreaterThanOrEqual(1500);
+    expect(indexMs).toBeLessThan(8_000);
+
+    r.db.close();
+  }, 30_000);
 });

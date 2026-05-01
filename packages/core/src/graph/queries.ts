@@ -345,10 +345,14 @@ export function recentlyChangedNear(
       const author = parts[1];
       const date = parts[2];
       const subject = parts.slice(3).join("\t");
-      if (!sha || !author || !date) continue;
+      // `author` is decorative — squash-merge bots, anonymous contributors,
+      // and malformed `.mailmap` files can yield an empty %an. Causal scoring
+      // only depends on sha + date, so accept the commit and surface
+      // "unknown" rather than silently dropping a real candidate.
+      if (!sha || !date) continue;
       collected.push({
         commit: sha,
-        author,
+        author: author && author.length > 0 ? author : "unknown",
         date,
         subject,
         file: row.path,

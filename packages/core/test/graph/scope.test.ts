@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolveScope } from "../../src/graph/scope.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -84,5 +86,50 @@ describe("resolveScope: budget cap", () => {
     expect(r.files).toHaveLength(1);
     expect(r.files[0]).toBe("packages/auth/src/login.ts");
     expect(r.notes.some((n) => n.includes("cap"))).toBe(true);
+  });
+
+  it("caps the directory walk during scanRepo on large repos (regression)", () => {
+    // Regression: scanRepo used to do a full recursive readdir BEFORE the
+    // maxFiles cap was consulted. On a 100k-file repo this blocked the
+    // event loop for tens of seconds and timed Cursor out. The cap must
+    // now apply DURING the walk.
+    const root = mkdtempSync(join(tmpdir(), "cgrca-scope-bigrepo-"));
+    try {
+      // 5000 files across 50 dirs of 100 files each, all parseable .ts.
+      // Each file imports the next one to give the BFS something to chew on.
+      const TOTAL = 5000;
+      const PER_DIR = 100;
+      for (let i = 0; i < TOTAL; i++) {
+        const d = Math.floor(i / PER_DIR);
+        const dir = join(root, `pkg${d}`);
+        if (i % PER_DIR === 0) mkdirSync(dir, { recursive: true });
+        const next = (i + 1) % TOTAL;
+        const nextDir = Math.floor(next / PER_DIR);
+        const importSpec = nextDir === d
+          ? `./f${next % PER_DIR}.js`
+          : `../pkg${nextDir}/f${next % PER_DIR}.js`;
+        writeFileSync(
+          join(dir, `f${i % PER_DIR}.ts`),
+          `import { x as x${next} } from "${importSpec}";\nexport const x = ${i};\n`,
+        );
+      }
+      // Seed the very first file. With maxFiles=100 and the cap applied
+      // during the walk, scanRepo should stop after ~400 files (4 * cap)
+      // and the whole call should finish well under 500ms even on a slow
+      // CI box. A pre-fix run scanned all 5000 files synchronously.
+      const t0 = Date.now();
+      const r = resolveScope(
+        { kind: "file", path: "pkg0/f0.ts" },
+        root,
+        { maxFiles: 100 },
+      );
+      const elapsed = Date.now() - t0;
+      expect(r.seeds).toEqual(["pkg0/f0.ts"]);
+      expect(r.files.length).toBeLessThanOrEqual(100);
+      expect(r.files).toContain("pkg0/f0.ts");
+      expect(elapsed).toBeLessThan(500);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

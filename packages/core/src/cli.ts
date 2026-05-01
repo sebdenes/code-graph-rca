@@ -4,12 +4,14 @@ import { resolve } from "node:path";
 import Database from "better-sqlite3";
 import { runRca, type FailureScope } from "./rca/runner.js";
 import { indexScope } from "./graph/orchestrator.js";
+import { openDb, type Db } from "./graph/db.js";
 import {
   definitionOf,
   callersOf,
   calleesOf,
   recentlyChangedNear,
 } from "./graph/queries.js";
+import type { CausalCandidate } from "./types.js";
 
 const VERSION = "0.0.1";
 
@@ -27,6 +29,9 @@ Commands:
                             Continue / Windsurf / Zed via their MCP config.
   init [path]               One-shot setup: detect editor MCP configs,
                             register cgrca, drop AGENTS.md at the repo root.
+                            Prints a plan; requires --yes (or interactive
+                            y/N) to mutate user config. Use --dry-run to
+                            preview without writing.
   version                   Print version.
 
 <failure> formats:
@@ -38,12 +43,16 @@ Commands:
 Common options:
   --repo <path>             Repo root (default: cwd).
   --json                    Emit JSON instead of human output (rca only).
+  --prompt                  rca: emit the full LLM-grounding markdown prompt
+                            (legacy behavior). Default is a ranked candidate
+                            table.
   -d, --depth <n>           Depth for callers/callees (default 2 / 1).
   --since <days>            Days for changed (default 90).
   --max-files <n>           Scope budget for rca (default 200).
   --max-loc <n>             LOC budget for rca (default 20000).
-  --persist <path>          Write the indexed graph to a SQLite file
-                            (open with any sqlite browser to inspect).
+  --persist <path>          Write the indexed graph to a SQLite file (or reuse
+                            it on warm queries; open with any sqlite browser
+                            to inspect).
 `;
 
 interface ParsedArgs {
@@ -83,6 +92,168 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 function repoRootFrom(flags: Record<string, string | boolean>): string {
   return resolve(typeof flags.repo === "string" ? flags.repo : process.cwd());
+}
+
+// Tiny ANSI helper. We avoid pulling in chalk just to color one column —
+// emit raw escapes only when stdout is a TTY so piped/JSON consumers stay
+// clean.
+const USE_COLOR = process.stdout.isTTY === true;
+function ansi(code: string, s: string): string {
+  return USE_COLOR ? `\x1b[${code}m${s}\x1b[0m` : s;
+}
+const dim = (s: string) => ansi("2", s);
+const bold = (s: string) => ansi("1", s);
+const red = (s: string) => ansi("31", s);
+const yellow = (s: string) => ansi("33", s);
+const cyan = (s: string) => ansi("36", s);
+
+function truncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  if (n <= 1) return s.slice(0, n);
+  return s.slice(0, n - 1) + "…";
+}
+
+function padRight(s: string, n: number): string {
+  // Pads against visible length; we never put ANSI codes through here.
+  if (s.length >= n) return s;
+  return s + " ".repeat(n - s.length);
+}
+
+// Color the score column based on rank — top candidate red, fading to dim.
+function colorScore(score: number, rank: number): string {
+  const txt = score.toFixed(1);
+  if (rank === 0) return bold(red(txt));
+  if (rank === 1) return red(txt);
+  if (rank === 2) return yellow(txt);
+  return dim(txt);
+}
+
+function basename(p: string): string {
+  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+interface RcaTableInput {
+  primarySymbol: string | null;
+  causalCandidates: CausalCandidate[];
+  notes: string[];
+}
+
+function renderRcaTable(r: RcaTableInput): string {
+  const lines: string[] = [];
+  const total = r.causalCandidates.length;
+  const anchor = r.causalCandidates.find((c) => c.role === "anchor");
+  const anchorLoc =
+    anchor && anchor.file && anchor.line != null
+      ? `${basename(anchor.file)}:${anchor.line}`
+      : anchor?.file ?? "-";
+  const anchorName = anchor?.name ?? r.primarySymbol ?? "(no anchor)";
+
+  if (total === 0) {
+    lines.push(
+      `${bold("CGRCA")} ${dim("·")} no causal candidates ${dim("·")} anchor: ${anchorName}`,
+    );
+    if (r.notes.length > 0) {
+      lines.push("");
+      for (const n of r.notes) lines.push(dim(`  note: ${n}`));
+    }
+    lines.push("");
+    lines.push(
+      dim(
+        "Run with --prompt for the full LLM-grounding markdown. Run with --json for machine output.",
+      ),
+    );
+    return lines.join("\n") + "\n";
+  }
+
+  lines.push(
+    `${bold("CGRCA")} ${dim("·")} ${total} candidate${total === 1 ? "" : "s"} ${dim("·")} anchor: ${cyan(anchorName)} (${dim(anchorLoc)})`,
+  );
+  lines.push("");
+
+  // Column widths: total ~120 cols.
+  const W_RANK = 3;
+  const W_SCORE = 6;
+  const W_ROLE = 8;
+  const W_SYMBOL = 28;
+  const W_LOC = 36;
+  // WHY gets the rest minus separators (5 gaps of 2 spaces = 10).
+  const W_WHY = 120 - W_RANK - W_SCORE - W_ROLE - W_SYMBOL - W_LOC - 10;
+
+  const header =
+    padRight("#", W_RANK) +
+    "  " +
+    padRight("SCORE", W_SCORE) +
+    "  " +
+    padRight("ROLE", W_ROLE) +
+    "  " +
+    padRight("SYMBOL", W_SYMBOL) +
+    "  " +
+    padRight("LOC", W_LOC) +
+    "  " +
+    "WHY";
+  lines.push(dim(header));
+
+  for (let i = 0; i < r.causalCandidates.length; i++) {
+    const c = r.causalCandidates[i]!;
+    const loc =
+      c.file && c.line != null
+        ? `${basename(c.file)}:${c.line}`
+        : c.file
+          ? basename(c.file)
+          : "-";
+    const rankStr = padRight(String(i + 1), W_RANK);
+    // Score: pad the visible text first, then wrap with ANSI.
+    const scorePadded = padRight(c.score.toFixed(1), W_SCORE);
+    const scoreColored = USE_COLOR
+      ? scorePadded.replace(c.score.toFixed(1), colorScore(c.score, i))
+      : scorePadded;
+    const roleStr = padRight(truncate(c.role, W_ROLE), W_ROLE);
+    const symStr = padRight(truncate(c.name, W_SYMBOL), W_SYMBOL);
+    const locStr = padRight(truncate(loc, W_LOC), W_LOC);
+    const whyStr = truncate(c.rationale || "", W_WHY);
+    lines.push(`${rankStr}  ${scoreColored}  ${roleStr}  ${symStr}  ${locStr}  ${whyStr}`);
+  }
+
+  lines.push("");
+  lines.push(
+    dim(
+      "Run with --prompt for the full LLM-grounding markdown. Run with --json for machine output.",
+    ),
+  );
+  return lines.join("\n") + "\n";
+}
+
+/**
+ * Try to reuse a previously-persisted SQLite graph instead of re-indexing.
+ * On a 28k-symbol repo this turns a 17s call into ~30ms. If the file
+ * doesn't exist we fall back to a full index (and persist there).
+ *
+ * Returns `{ db, reused }` so callers know whether to close vs. log.
+ */
+function reusePersistedDb(
+  persist: string,
+  repoRoot: string,
+): { db: Db; reused: true } | null {
+  const persistAbs = resolve(persist);
+  if (!existsSync(persistAbs)) return null;
+  const db = openDb({ persist: persistAbs });
+  // Best-effort sanity check: warn if the persisted graph is from a different
+  // repo. Not fatal — the caller may genuinely be querying the saved graph
+  // from a different cwd.
+  try {
+    const row = db.prepare("SELECT value FROM meta WHERE key = ?").get("repo_root") as
+      | { value: string }
+      | undefined;
+    if (row && row.value && resolve(row.value) !== resolve(repoRoot)) {
+      process.stderr.write(
+        `warning: --persist graph was indexed from ${row.value}, but --repo is ${repoRoot}\n`,
+      );
+    }
+  } catch {
+    // meta table missing or shape unexpected; ignore.
+  }
+  return { db, reused: true };
 }
 
 function parseFailure(spec: string, repoRoot: string): FailureScope {
@@ -148,9 +319,19 @@ async function cmdRca(args: ParsedArgs): Promise<number> {
 
   if (args.flags.json) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-  } else {
+  } else if (args.flags.prompt) {
+    // Legacy behavior: dump the full markdown protocol for paste-into-LLM.
     process.stdout.write(result.prompt);
     process.stdout.write("\n");
+  } else {
+    // New default: ranked candidate table — the actual signal cgrca produces.
+    process.stdout.write(
+      renderRcaTable({
+        primarySymbol: result.primarySymbol,
+        causalCandidates: result.causalCandidates,
+        notes: result.notes,
+      }),
+    );
   }
   return 0;
 }
@@ -174,6 +355,30 @@ async function cmdIndex(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+/**
+ * Resolve the graph DB for read-only subcommands (define / callers / callees
+ * / changed). When `--persist <path>` points to an existing SQLite file we
+ * reuse it (≈30ms on a 28k-symbol repo); otherwise we run a full index and,
+ * if `--persist` was given but the file didn't exist, write through to it
+ * so the next call is warm.
+ */
+async function resolveQueryDb(
+  args: ParsedArgs,
+  repoRoot: string,
+): Promise<Db> {
+  const persist =
+    typeof args.flags.persist === "string" ? args.flags.persist : undefined;
+  if (persist) {
+    const reused = reusePersistedDb(persist, repoRoot);
+    if (reused) return reused.db;
+    // Fall through: file didn't exist — index the scope and persist it.
+    const r = await indexScope({ repoRoot, persist });
+    return r.db;
+  }
+  const r = await indexScope({ repoRoot });
+  return r.db;
+}
+
 async function cmdDefine(args: ParsedArgs): Promise<number> {
   const name = args.positional[0];
   if (!name) {
@@ -181,8 +386,8 @@ async function cmdDefine(args: ParsedArgs): Promise<number> {
     return 2;
   }
   const repoRoot = repoRootFrom(args.flags);
-  const r = await indexScope({ repoRoot });
-  const defs = definitionOf(r.db, name);
+  const db = await resolveQueryDb(args, repoRoot);
+  const defs = definitionOf(db, name);
   if (defs.length === 0) {
     process.stdout.write(`no definitions for "${name}"\n`);
   } else {
@@ -193,7 +398,7 @@ async function cmdDefine(args: ParsedArgs): Promise<number> {
       if (d.signature) process.stdout.write(`  ${d.signature}\n`);
     }
   }
-  r.db.close();
+  db.close();
   return 0;
 }
 
@@ -205,10 +410,10 @@ async function cmdCallers(args: ParsedArgs): Promise<number> {
   }
   const repoRoot = repoRootFrom(args.flags);
   const depth = typeof args.flags.depth === "string" ? Number(args.flags.depth) : 2;
-  const r = await indexScope({ repoRoot });
-  const tree = callersOf(r.db, name, { depth });
+  const db = await resolveQueryDb(args, repoRoot);
+  const tree = callersOf(db, name, { depth });
   process.stdout.write(JSON.stringify(tree, null, 2) + "\n");
-  r.db.close();
+  db.close();
   return 0;
 }
 
@@ -220,10 +425,10 @@ async function cmdCallees(args: ParsedArgs): Promise<number> {
   }
   const repoRoot = repoRootFrom(args.flags);
   const depth = typeof args.flags.depth === "string" ? Number(args.flags.depth) : 1;
-  const r = await indexScope({ repoRoot });
-  const tree = calleesOf(r.db, name, { depth });
+  const db = await resolveQueryDb(args, repoRoot);
+  const tree = calleesOf(db, name, { depth });
   process.stdout.write(JSON.stringify(tree, null, 2) + "\n");
-  r.db.close();
+  db.close();
   return 0;
 }
 
@@ -235,8 +440,8 @@ async function cmdChanged(args: ParsedArgs): Promise<number> {
   }
   const repoRoot = repoRootFrom(args.flags);
   const sinceDays = typeof args.flags.since === "string" ? Number(args.flags.since) : 90;
-  const r = await indexScope({ repoRoot });
-  const changes = recentlyChangedNear(r.db, name, { repoRoot, sinceDays });
+  const db = await resolveQueryDb(args, repoRoot);
+  const changes = recentlyChangedNear(db, name, { repoRoot, sinceDays });
   if (changes.length === 0) {
     process.stdout.write(`no recent commits touching "${name}" in the last ${sinceDays}d\n`);
   } else {
@@ -244,7 +449,7 @@ async function cmdChanged(args: ParsedArgs): Promise<number> {
       process.stdout.write(`${c.commit.slice(0, 8)}  ${c.author}  ${c.date}  ${c.subject}  (${c.file})\n`);
     }
   }
-  r.db.close();
+  db.close();
   return 0;
 }
 
@@ -256,10 +461,61 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
   const { fileURLToPath } = await import("node:url");
   const cliPath = fileURLToPath(import.meta.url);
   const dryRun = args.flags["dry-run"] === true;
-  const { runInit, formatInitResult } = await import("./init/install.js");
-  const result = runInit({ cliPath, repoRoot, dryRun });
+  const yes = args.flags["yes"] === true || args.flags["y"] === true;
+  const { runInit, formatInitResult, planInit, formatInitPlan } = await import(
+    "./init/install.js"
+  );
+
+  // Always show the plan first. `cgrca init` used to silently mutate
+  // user-level configs (~/.claude.json, ~/.cursor/mcp.json, ...). A user
+  // running it just to see what it does could lose state. Now we print a
+  // summary and require explicit consent before writing.
+  const plan = planInit({ cliPath, repoRoot });
+  process.stdout.write(formatInitPlan(plan, cliPath, repoRoot));
+
+  if (dryRun) {
+    process.stdout.write("Dry run — nothing was written.\n");
+    return 0;
+  }
+
+  if (!yes) {
+    // Non-TTY callers must pass --yes (or --dry-run) explicitly so scripts
+    // don't accidentally mutate a developer's editor configs.
+    const isTty = process.stdin.isTTY === true && process.stdout.isTTY === true;
+    if (!isTty) {
+      process.stderr.write(
+        "Refusing to mutate user config without confirmation.\n" +
+          "Re-run with --yes to apply, or --dry-run to preview.\n",
+      );
+      return 1;
+    }
+    process.stdout.write("Apply changes? [y/N] ");
+    const answer = await readOneLine();
+    if (!/^y(es)?$/i.test(answer.trim())) {
+      process.stdout.write("Aborted.\n");
+      return 1;
+    }
+  }
+
+  const result = runInit({ cliPath, repoRoot });
   process.stdout.write(formatInitResult(result, cliPath, repoRoot));
   return 0;
+}
+
+/**
+ * Read a single line from stdin. We use `readline` rather than pulling in
+ * a new dep — this is the only interactive prompt in the CLI.
+ */
+async function readOneLine(): Promise<string> {
+  const { createInterface } = await import("node:readline");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise<string>((resolvePromise) => {
+    rl.once("line", (line) => {
+      rl.close();
+      resolvePromise(line);
+    });
+    rl.once("close", () => resolvePromise(""));
+  });
 }
 
 async function cmdMcp(args: ParsedArgs): Promise<number> {
