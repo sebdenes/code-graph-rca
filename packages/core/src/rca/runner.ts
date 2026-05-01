@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { resolveScope } from "../graph/scope.js";
 import { indexScope } from "../graph/orchestrator.js";
 import {
@@ -14,6 +14,7 @@ import type {
   CalleeTree,
   CausalCandidate,
   Definition,
+  RecentChange,
 } from "../types.js";
 import { buildCausalChainSection, buildGraphContext } from "./context.js";
 import { buildPrompt } from "./prompt.js";
@@ -158,10 +159,23 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
     }
 
     // Hydrate recency on the trees if we have a real git repo.
+    let anchorRecentChanges: RecentChange[] = [];
     if (callerTree && calleeTree && isGitRepo(req.repoRoot)) {
       const hydrator = createRecencyHydrator({ repoRoot: req.repoRoot });
       hydrateCallerTree(callerTree, indexed.db, hydrator);
       hydrateCalleeTree(calleeTree, indexed.db, hydrator);
+      // The anchor isn't in either tree (the trees are caller/callee
+      // neighborhoods of the anchor). Fetch its recency directly so the
+      // most important node in the chain isn't excluded from the recency
+      // signal.
+      const firstDef = anchorDefs[0];
+      if (firstDef) {
+        anchorRecentChanges = hydrator.fetch(
+          firstDef.file,
+          firstDef.startLine,
+          firstDef.endLine,
+        );
+      }
     }
 
     // Build the ranked causal-candidate shortlist.
@@ -172,6 +186,7 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
         name: anchor,
         file: firstDef?.file ?? null,
         line: firstDef?.startLine ?? null,
+        recentChanges: anchorRecentChanges,
       };
       try {
         causalCandidates = buildCausalChain(
@@ -222,8 +237,19 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
 }
 
 function isGitRepo(repoRoot: string): boolean {
+  // Walk up looking for a .git entry. The previous check only at repoRoot
+  // failed when `--repo` pointed inside a monorepo (e.g. packages/core)
+  // whose .git lives at the parent root, silently disabling all recency
+  // hydration. Walking up makes recency Just Work for any subdir of a repo.
   try {
-    return existsSync(join(repoRoot, ".git"));
+    let dir = repoRoot;
+    for (let i = 0; i < 12; i++) {
+      if (existsSync(join(dir, ".git"))) return true;
+      const parent = dirname(dir);
+      if (parent === dir) return false;
+      dir = parent;
+    }
+    return false;
   } catch {
     return false;
   }

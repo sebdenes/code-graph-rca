@@ -64,6 +64,35 @@ describe("runRca", () => {
     expect(result.prompt).toContain("First hypothesis");
   });
 
+  it("recency hydrates when --repo points inside a monorepo (.git is a parent)", async () => {
+    // Regression for: isGitRepo only checked repoRoot/.git, so running RCA
+    // with --repo pointing into a subdir of a real repo silently disabled
+    // recency hydration. Plus the anchor's recentChanges was hardcoded to []
+    // even when hydration ran. Both should be fixed.
+    const root = mkdtempSync(join(tmpdir(), "rca-mono-"));
+    const sub = join(root, "packages", "lib");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { execSync } = await import("node:child_process");
+    mkdirSync(sub, { recursive: true });
+    // Repo at root; the indexed scope lives in packages/lib/.
+    execSync("git init -q -b main", { cwd: root });
+    execSync('git config user.email "t@t.t" && git config user.name "T" && git config commit.gpgsign false', { cwd: root, shell: "/bin/sh" });
+    writeFileSync(join(sub, "a.ts"), "export function alpha(): number { return 1; }\n");
+    execSync("git add -A && git commit -q -m initial", { cwd: root, shell: "/bin/sh" });
+    writeFileSync(join(sub, "a.ts"), "export function alpha(): number { return 2; }\n");
+    execSync("git add -A && git commit -q -m bump", { cwd: root, shell: "/bin/sh" });
+
+    const result = await runRca({
+      failureScope: { kind: "symbol", name: "alpha" },
+      repoRoot: sub,
+    });
+    expect(result.causalCandidates.length).toBeGreaterThan(0);
+    const anchor = result.causalCandidates.find((c) => c.role === "anchor");
+    expect(anchor).toBeDefined();
+    // The whole point: anchor must carry the recent commits.
+    expect(anchor!.recentChanges.length).toBeGreaterThan(0);
+  });
+
   it("empty repo / nonexistent file returns empty queries with note", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "rca-empty-"));
     const result = await runRca({

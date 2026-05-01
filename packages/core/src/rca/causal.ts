@@ -34,6 +34,9 @@ export interface CausalChainInput {
     line: number | null;
     /** Optional anchor subsystem; if omitted, looked up from Db. */
     subsystem?: string | null;
+    /** Recent commits touching the anchor's lines. Populate from the
+     *  recency hydrator; falls back to empty if not provided. */
+    recentChanges?: RecentChange[];
   };
   /** Caller tree, hydrated with recentChanges. */
   callerTree: CallerTree;
@@ -193,7 +196,7 @@ function collectCandidates(input: CausalChainInput): RawCandidate[] {
     line: input.anchor.line,
     role: "anchor",
     distance: 0,
-    recentChanges: [],
+    recentChanges: input.anchor.recentChanges ?? [],
     subsystem: input.anchor.subsystem ?? null,
   });
 
