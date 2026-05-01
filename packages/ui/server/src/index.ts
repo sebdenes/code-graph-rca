@@ -15,6 +15,7 @@ import { registerDiffRoute } from "./routes/diff.js";
 import { registerImpactRoute } from "./routes/impact.js";
 import { registerGraphRoute } from "./routes/graph.js";
 import { registerLiveRoute, type LiveBroadcaster } from "./routes/live.js";
+import { registerBridgeRoute } from "./routes/bridge.js";
 import { registerStatic } from "./static.js";
 
 export interface CreateServerOptions {
@@ -85,6 +86,7 @@ export async function createServer(
   registerDiffRoute(fastify, sessions);
   registerImpactRoute(fastify, sessions);
   registerGraphRoute(fastify, sessions);
+  registerBridgeRoute(fastify);
 
   if (!opts.dev) {
     await registerStatic(fastify);

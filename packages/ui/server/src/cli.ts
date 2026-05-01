@@ -1,9 +1,40 @@
 #!/usr/bin/env node
-import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, statSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
 import open from "open";
 import chokidar from "chokidar";
 import { createServer } from "./index.js";
+
+function bridgeFilePath(): string {
+  return join(homedir(), ".cgrca", "bridge.json");
+}
+
+function writeBridgeFile(port: number, sessionsDir: string): string {
+  const dir = join(homedir(), ".cgrca");
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    // best-effort; downstream write will surface real errors.
+  }
+  const path = bridgeFilePath();
+  const payload = {
+    url: `http://127.0.0.1:${port}`,
+    port,
+    pid: process.pid,
+    sessionsDir,
+  };
+  writeFileSync(path, JSON.stringify(payload, null, 2));
+  return path;
+}
+
+function removeBridgeFile(): void {
+  try {
+    unlinkSync(bridgeFilePath());
+  } catch {
+    // ignore — already gone or never written
+  }
+}
 
 interface CliArgs {
   pathArg: string | undefined;
@@ -96,6 +127,18 @@ async function main(): Promise<number> {
     `cgrca-view listening on ${url}  (${count} session${count === 1 ? "" : "s"} loaded)\n`,
   );
 
+  // Write the bridge lock file so MCP servers on the same machine can
+  // discover this UI by convention.
+  const sessionsDir = args.pathArg !== undefined ? resolve(args.pathArg) : "";
+  try {
+    const bridgePath = writeBridgeFile(port, sessionsDir);
+    process.stdout.write(`bridge lock at ${bridgePath}\n`);
+  } catch (err) {
+    process.stderr.write(
+      `warning: failed to write bridge lock: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+
   if (args.watch) {
     const watchAbs = resolve(args.watch);
     if (existsSync(watchAbs) && statSync(watchAbs).isDirectory()) {
@@ -127,6 +170,7 @@ async function main(): Promise<number> {
   // Hold the process open. Fastify keeps the event loop alive, but we also
   // wire SIGINT for clean exit so DB handles get released.
   const shutdown = async (): Promise<void> => {
+    removeBridgeFile();
     try {
       await handle.close();
     } finally {

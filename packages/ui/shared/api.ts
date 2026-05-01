@@ -163,4 +163,5 @@ export interface ImpactResponse {
 export type LiveEvent =
   | { kind: "reindex-start"; reason: string }
   | { kind: "reindex-done"; durationMs: number; symbolCount: number; edgeCount: number }
-  | { kind: "file-changed"; path: string };
+  | { kind: "file-changed"; path: string }
+  | { kind: "select"; payload: { name: string; file: string; line: number } | null };

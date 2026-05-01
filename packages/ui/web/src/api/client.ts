@@ -59,6 +59,29 @@ export const api = {
       }),
     );
   },
+  /**
+   * Bridge mode: publish the user's current selection to the local bridge
+   * channel. Best-effort, fire-and-forget — failures are swallowed so the UI
+   * keeps working when no MCP peer is connected.
+   */
+  async bridgePostSelect(
+    payload: { name: string; file: string; line: number; subsystem?: string } | null,
+  ): Promise<void> {
+    try {
+      await fetch(`${BASE}/bridge/select`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // ignore
+    }
+  },
+  async bridgeGetSelect(): Promise<
+    { name: string; file: string; line: number; subsystem?: string } | { none: true }
+  > {
+    return j(await fetch(`${BASE}/bridge/select`));
+  },
 };
 
 function encodePath(p: string): string {

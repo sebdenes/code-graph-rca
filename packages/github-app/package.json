@@ -1,0 +1,40 @@
+{
+  "name": "code-graph-rca-github-app",
+  "version": "0.0.1",
+  "description": "GitHub App that runs cgrca on every PR — posts ranked causal candidates and blast-radius comment.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Sebastien Denes",
+  "private": true,
+  "homepage": "https://github.com/sebdenes/code-graph-rca#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sebdenes/code-graph-rca.git",
+    "directory": "packages/github-app"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "cgrca-github-app": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "code-graph-rca": "^0.2.1",
+    "@octokit/app": "^15.1.0",
+    "@octokit/webhooks": "^13.4.1",
+    "fastify": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.2"
+  }
+}

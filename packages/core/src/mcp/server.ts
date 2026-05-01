@@ -28,6 +28,7 @@ import {
 } from "../graph/queries.js";
 import { runRca } from "../rca/runner.js";
 import { resolveScope } from "../graph/scope.js";
+import { tryConnectBridge, type BridgeClient } from "./bridge.js";
 
 interface ServerOptions {
   /** Repo root the agent will be querying against. */
@@ -75,6 +76,22 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
     version: "0.2.1",
   });
 
+  // Bridge mode is opt-in: if no `~/.cgrca/bridge.json` exists, `bridge` is
+  // null and the new tools degrade gracefully to `{ none: true }`. Existing
+  // tools work exactly as before.
+  const bridge: BridgeClient | null = tryConnectBridge();
+
+  /** Publish a focus event when the agent targets a symbol — best-effort. */
+  const publishFocus = async (
+    name: string,
+    file: string | null,
+    line: number | null,
+  ): Promise<void> => {
+    if (!bridge) return;
+    if (!file || typeof line !== "number") return;
+    await bridge.postSelection({ name, file, line });
+  };
+
   // ---- Tool: definitionOf ----
   server.registerTool(
     "cgrca_definitionOf",
@@ -93,6 +110,8 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       if (language) queryOpts.language = language;
       if (subsystem) queryOpts.subsystem = subsystem;
       const defs = definitionOf(db, name, queryOpts);
+      const first = defs[0];
+      if (first) await publishFocus(first.name, first.file, first.startLine);
       return asJson(defs);
     },
   );
@@ -114,6 +133,10 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       const queryOpts: { depth?: number; minConfidence?: number } = {};
       if (typeof depth === "number") queryOpts.depth = depth;
       if (typeof minConfidence === "number") queryOpts.minConfidence = minConfidence;
+      // Implicit focus: the seed of a callers walk IS the agent's focus.
+      const defs = definitionOf(db, name);
+      const first = defs[0];
+      if (first) await publishFocus(first.name, first.file, first.startLine);
       return asJson(callersOf(db, name, queryOpts));
     },
   );
@@ -133,6 +156,9 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       const { db } = await ensureIndex(opts.repoRoot);
       const queryOpts: { depth?: number } = {};
       if (typeof depth === "number") queryOpts.depth = depth;
+      const defs = definitionOf(db, name);
+      const first = defs[0];
+      if (first) await publishFocus(first.name, first.file, first.startLine);
       return asJson(calleesOf(db, name, queryOpts));
     },
   );
@@ -266,6 +292,41 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       if (typeof args.maxDepth === "number") budget.maxDepth = args.maxDepth;
       const scope = resolveScope(failure, opts.repoRoot, budget);
       return asJson(scope);
+    },
+  );
+
+  // ---- Tool: cgrca_currentSelection (bridge mode read) ----
+  server.registerTool(
+    "cgrca_currentSelection",
+    {
+      description:
+        "Bridge mode: read the symbol the user is currently focused on in the cgrca-view UI on the same machine. Returns { none: true } when no UI is running or nothing is selected. Discovery is by-convention via ~/.cgrca/bridge.json.",
+      inputSchema: {},
+    },
+    async () => {
+      if (!bridge) return asJson({ none: true });
+      const sel = await bridge.getSelection();
+      if (!sel) return asJson({ none: true });
+      return asJson(sel);
+    },
+  );
+
+  // ---- Tool: cgrca_publishSelection (bridge mode write) ----
+  server.registerTool(
+    "cgrca_publishSelection",
+    {
+      description:
+        "Bridge mode: tell the cgrca-view UI 'I'm now focused on this symbol' so it highlights in the open browser graph. No-op when no UI is connected.",
+      inputSchema: {
+        name: z.string(),
+        file: z.string(),
+        line: z.number().int().min(1),
+      },
+    },
+    async ({ name, file, line }) => {
+      if (!bridge) return asJson({ ok: false, reason: "no-bridge" });
+      const ok = await bridge.postSelection({ name, file, line });
+      return asJson({ ok });
     },
   );
 

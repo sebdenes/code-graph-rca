@@ -32,6 +32,7 @@ const MAX_PINS = 6;
 
 export function GraphView({ sessionId }: { sessionId: string }) {
   const selectSymbol = useSession((s) => s.selectSymbol);
+  const applyBridgeSelection = useSession((s) => s.applyBridgeSelection);
   const cyRef = useRef<CyHandle | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -134,6 +135,52 @@ export function GraphView({ sessionId }: { sessionId: string }) {
     setHiddenKinds(new Set());
     cyRef.current?.fit();
   }, []);
+
+  // Bridge mode: subscribe to selection updates from MCP peers.
+  // Skip events whose payload matches the most recent local selection so we
+  // don't re-apply our own POST as a remote update.
+  useEffect(() => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${proto}//${window.location.host}/api/bridge/live`;
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      return;
+    }
+    const onMessage = (ev: MessageEvent) => {
+      try {
+        const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
+          kind?: string;
+          payload?: { name: string; file: string; line: number } | null;
+        };
+        if (msg.kind !== "select") return;
+        const local = useSession.getState().selectedSymbol;
+        const payload = msg.payload ?? null;
+        if (
+          payload &&
+          local &&
+          local.name === payload.name &&
+          local.file === payload.file &&
+          local.line === payload.line
+        ) {
+          return; // echo of our own POST
+        }
+        applyBridgeSelection(payload);
+      } catch {
+        // ignore malformed frames
+      }
+    };
+    ws.addEventListener("message", onMessage);
+    return () => {
+      try {
+        ws?.removeEventListener("message", onMessage);
+        ws?.close();
+      } catch {
+        // ignore
+      }
+    };
+  }, [applyBridgeSelection]);
 
   // Cmd/Ctrl + K focuses the search box.
   useEffect(() => {

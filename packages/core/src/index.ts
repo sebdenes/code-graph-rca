@@ -10,3 +10,9 @@ export {
 export type * from "./types.js";
 export { runRca } from "./rca/runner.js";
 export type { RcaRequest, RcaResult, FailureScope } from "./rca/runner.js";
+export { buildImpact } from "./rca/impact.js";
+export type {
+  ImpactNode,
+  ImpactRequest,
+  ImpactResponse,
+} from "./rca/impact.js";
