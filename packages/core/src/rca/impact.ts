@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { Db } from "../graph/db.js";
 import { callersOf, definitionOf } from "../graph/queries.js";
+import { isStdlibName } from "./stdlib-names.js";
 import type {
   CallerNode,
   CallerTree,
@@ -72,25 +73,28 @@ function loadScope(db: Db): Sandbox & { repoRoot: string | null } {
   };
 }
 
-/** Return number of unresolved outgoing CALLS from a (name, file) pair. */
+/** Return number of unresolved outgoing CALLS from a (name, file) pair,
+ *  excluding stdlib/builtin targets that don't represent real ambiguity. */
 function unresolvedOutgoingCount(
   db: Db,
   name: string,
   file: string | null,
 ): number {
   const sql = file
-    ? `SELECT count(*) AS n
+    ? `SELECT DISTINCT to_name
          FROM edges e
          JOIN symbols s ON s.id = e.from_symbol_id
          JOIN files f ON f.id = s.file_id
         WHERE s.name = ? AND f.path = ? AND e.kind = 'CALLS' AND e.to_symbol_id IS NULL`
-    : `SELECT count(*) AS n
+    : `SELECT DISTINCT to_name
          FROM edges e
          JOIN symbols s ON s.id = e.from_symbol_id
         WHERE s.name = ? AND e.kind = 'CALLS' AND e.to_symbol_id IS NULL`;
   const params = file ? [name, file] : [name];
-  const row = db.prepare(sql).get(...params) as { n: number } | undefined;
-  return row?.n ?? 0;
+  const rows = db.prepare(sql).all(...params) as Array<{ to_name: string }>;
+  let n = 0;
+  for (const r of rows) if (!isStdlibName(r.to_name)) n++;
+  return n;
 }
 
 /** Files in the indexed scope that look like tests AND mention the symbol. */

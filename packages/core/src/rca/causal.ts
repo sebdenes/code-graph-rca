@@ -8,6 +8,7 @@ import type {
   RecentChange,
   SymbolKind,
 } from "../types.js";
+import { isStdlibName } from "./stdlib-names.js";
 
 /**
  * Causal chain ranker. Pure function (modulo a single Db read for unresolved-edge counts)
@@ -445,7 +446,12 @@ function lookupSymbolMeta(
             AND to_symbol_id IS NULL`,
       )
       .all(...ids) as Array<{ to_name: string }>;
-    const targets = [...new Set(unresolved.map((r) => r.to_name))];
+    // Drop stdlib/builtin call targets — `isinstance`, `len`, `getattr`,
+    // `gather`, `forEach` etc. inflate the ambiguity score for every large
+    // function without indicating real dynamic-dispatch risk. App-level
+    // unresolved names stay (they're the ones worth flagging).
+    const targets = [...new Set(unresolved.map((r) => r.to_name))]
+      .filter((n) => !isStdlibName(n));
     targets.sort();
 
     const first = rows[0]!;

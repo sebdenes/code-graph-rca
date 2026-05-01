@@ -25,6 +25,16 @@ export interface IndexResult {
 
 export async function indexScope(opts: IndexOptions): Promise<IndexResult> {
   const db = openDb(opts.persist ? { persist: opts.persist } : {});
+  // If persisting to an existing sqlite, clear the data tables before
+  // re-indexing — otherwise the second run hits `UNIQUE constraint failed:
+  // files.path`. We keep schema + meta; ON DELETE CASCADE on files takes
+  // symbols + edges + imports with it, but we delete imports explicitly in
+  // case a future schema relaxes the cascade.
+  if (opts.persist) {
+    db.exec(
+      "DELETE FROM imports; DELETE FROM edges; DELETE FROM symbols; DELETE FROM files;",
+    );
+  }
   // Stamp repo_root into meta so a moved sqlite is self-describing.
   try {
     db.prepare(
