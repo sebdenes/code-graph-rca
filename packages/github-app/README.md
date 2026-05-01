@@ -1,15 +1,53 @@
-# cgrca github-app
+# code-graph-rca-github-app
 
-A GitHub App that runs [code-graph-rca](https://github.com/sebdenes/code-graph-rca) on every PR and posts a single, idempotent comment with:
+PR-review for [code-graph-rca](https://github.com/sebdenes/code-graph-rca). On every pull request: index the changed scope, rank the most likely root-cause sites, compute the blast radius, post a single idempotent comment that updates in place on every push.
 
-- the top-3 changed symbols ranked by causal score,
-- a blast-radius summary (transitive callers + top untested ones),
-- recent commits in the affected neighborhood, and
-- a collapsible block of unresolved-call hints (grep-bait for the LLM that reviews the PR).
+**Two ways to use it:**
 
-The same comment is updated in place on every `synchronize` event.
+| | **GitHub Action** (`cgrca-pr-review`) | **GitHub App** (`cgrca-github-app`) |
+|---|---|---|
+| Hosting | none — runs on the PR's GitHub Actions runner | persistent webhook server you host (Fly / Render / Railway / VPS) |
+| Setup | drop one workflow file in `.github/workflows/` | register an App in github.com, deploy this server, point the webhook |
+| Auth | the runner's `GITHUB_TOKEN` | a private key + installation token |
+| Best for | individual repos, OSS, fast adoption | hosting cgrca-as-a-service across many repos under one bot identity |
 
-## Environment
+Both modes call the same handler and produce the same comment. Pick whichever fits your distribution model.
+
+## Path A — GitHub Action (recommended start)
+
+Drop this at `.github/workflows/cgrca.yml`:
+
+```yaml
+name: cgrca PR review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+jobs:
+  cgrca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: sebdenes/code-graph-rca@v0.3.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+That's it. No secrets to register, no service to deploy. The Action installs `code-graph-rca-github-app` from npm, runs it against the PR head, posts the comment.
+
+The comment is upserted by an HTML marker (`<!-- cgrca-pr-bot:v1 -->`), so re-pushes update the same comment instead of stacking new ones.
+
+## Path B — GitHub App (hosted webhook)
+
+The original mode. Use when you want one bot identity reviewing PRs across many repos under a shared install — not per-repo workflow files.
+
+### Environment
 
 | Variable | Purpose |
 | --- | --- |

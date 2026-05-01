@@ -1,11 +1,19 @@
 {
   "name": "code-graph-rca-github-app",
-  "version": "0.0.1",
-  "description": "GitHub App that runs cgrca on every PR — posts ranked causal candidates and blast-radius comment.",
+  "version": "0.3.0",
+  "description": "GitHub PR-review for code-graph-rca — works as a GitHub App (hosted webhook) OR as a GitHub Action (no hosting). Posts ranked causal candidates + blast-radius comments on every PR.",
   "type": "module",
   "license": "MIT",
   "author": "Sebastien Denes",
-  "private": true,
+  "keywords": [
+    "github-action",
+    "github-app",
+    "pull-request",
+    "code-review",
+    "rca",
+    "code-graph",
+    "ai-agent"
+  ],
   "homepage": "https://github.com/sebdenes/code-graph-rca#readme",
   "repository": {
     "type": "git",
@@ -16,19 +24,27 @@
     "node": ">=20"
   },
   "bin": {
-    "cgrca-github-app": "./dist/cli.js"
+    "cgrca-github-app": "./dist/cli.js",
+    "cgrca-pr-review": "./dist/action-cli.js"
   },
   "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
-    "code-graph-rca": "^0.2.1",
     "@octokit/app": "^15.1.0",
+    "@octokit/rest": "^21.1.1",
     "@octokit/webhooks": "^13.4.1",
+    "code-graph-rca": "^0.3.0",
     "fastify": "^5.0.0"
   },
   "devDependencies": {

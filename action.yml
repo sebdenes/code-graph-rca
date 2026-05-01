@@ -1,0 +1,33 @@
+name: 'cgrca PR review'
+description: 'Run code-graph-rca on every pull request and post a ranked-suspects + blast-radius comment.'
+author: 'Sebastien Denes'
+branding:
+  icon: 'git-pull-request'
+  color: 'purple'
+
+inputs:
+  github-token:
+    description: 'GitHub token used to post the comment. Default: $GITHUB_TOKEN supplied to the workflow.'
+    required: true
+  pr-review-version:
+    description: 'Version of code-graph-rca-github-app to install. Use "latest" to track the npm dist-tag, or a specific semver to pin.'
+    required: false
+    default: 'latest'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Node 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install code-graph-rca-github-app
+      shell: bash
+      run: npm install -g code-graph-rca-github-app@${{ inputs.pr-review-version }}
+
+    - name: Run cgrca PR review
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: cgrca-pr-review

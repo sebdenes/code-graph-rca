@@ -73,7 +73,7 @@ function asJson(value: unknown): { content: Array<{ type: "text"; text: string }
 export async function startMcpServer(opts: ServerOptions): Promise<void> {
   const server = new McpServer({
     name: "cgrca",
-    version: "0.2.1",
+    version: "0.3.0",
   });
 
   // Bridge mode is opt-in: if no `~/.cgrca/bridge.json` exists, `bridge` is
