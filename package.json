@@ -1,46 +1,25 @@
 {
-  "name": "code-graph-rca",
-  "version": "0.0.1",
-  "description": "RCA-specific code knowledge graph for AI coding agents. Session-scoped, in-memory, opinionated.",
-  "type": "module",
+  "name": "code-graph-rca-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspaces root for code-graph-rca and its UI.",
   "license": "MIT",
+  "type": "module",
   "engines": {
     "node": ">=20"
   },
-  "bin": {
-    "cgrca": "./dist/cli.js"
-  },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "better-sqlite3": "^11.3.0",
-    "ignore": "^6.0.2",
-    "tree-sitter-wasms": "^0.1.12",
-    "web-tree-sitter": "^0.24.3"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
-    "@types/node": "^22.7.4",
-    "tsx": "^4.19.1",
-    "typescript": "^5.6.2",
-    "vitest": "^2.1.2"
-  },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ]
+    "build": "npm run build -ws --if-present",
+    "test": "npm run test -ws --if-present",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "core": "npm -w packages/core",
+    "ui": "npm -w packages/ui",
+    "core:test": "npm -w packages/core test",
+    "core:build": "npm -w packages/core run build",
+    "ui:dev": "npm -w packages/ui run dev",
+    "ui:build": "npm -w packages/ui run build"
+  }
 }
