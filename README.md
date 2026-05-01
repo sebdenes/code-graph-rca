@@ -1,17 +1,21 @@
 <div align="center">
 
-# code-graph-rca
+# 🌟 Halo
 
-**RCA infrastructure for AI-built code.**
+**RCA infrastructure for AI-built code.** Lights up the bug.
 
 A code knowledge graph + opinionated RCA engine + visual graph explorer, designed for the world where most code is written with AI assistance and the bugs the agent ships are bugs the agent has to debug.
 
-[![npm version](https://img.shields.io/npm/v/code-graph-rca.svg?style=flat-square)](https://www.npmjs.com/package/code-graph-rca)
+[![npm version](https://img.shields.io/npm/v/code-graph-rca.svg?label=core&style=flat-square)](https://www.npmjs.com/package/code-graph-rca)
 [![ui version](https://img.shields.io/npm/v/code-graph-rca-ui.svg?label=ui&style=flat-square)](https://www.npmjs.com/package/code-graph-rca-ui)
+[![github-app version](https://img.shields.io/npm/v/code-graph-rca-github-app.svg?label=github-app&style=flat-square)](https://www.npmjs.com/package/code-graph-rca-github-app)
+[![CI](https://img.shields.io/github/actions/workflow/status/sebdenes/code-graph-rca/cgrca.yml?branch=main&label=cgrca%20PR%20review&style=flat-square)](https://github.com/sebdenes/code-graph-rca/actions/workflows/cgrca.yml)
 [![license](https://img.shields.io/npm/l/code-graph-rca.svg?style=flat-square)](LICENSE)
 [![node](https://img.shields.io/node/v/code-graph-rca.svg?style=flat-square)](https://nodejs.org)
 
 </div>
+
+> **Heads up on the brand.** The product is *Halo*. The npm packages and CLI are still `code-graph-rca` / `code-graph-rca-ui` / `code-graph-rca-github-app` and the binaries are `cgrca`, `cgrca-view`, `cgrca-pr-review` — those names are stable. The README and marketing use *Halo* as the display name.
 
 ---
 
@@ -19,7 +23,7 @@ A code knowledge graph + opinionated RCA engine + visual graph explorer, designe
 
 When an AI agent investigates a bug it reads files one at a time and infers structure from filenames and imports. It misses dependencies, breaking changes, and the actual call site of the failure. Its fixes introduce new bugs because it can't see the blast radius.
 
-`cgrca` fixes that. Given a failure — a stack trace, a failing test, a symbol, a file — it walks outward from the failure scope, indexes just those files with [tree-sitter](https://tree-sitter.github.io/) into in-memory SQLite, then exposes structural facts via:
+Halo fixes that. Given a failure — a stack trace, a failing test, a symbol, a file — it walks outward from the failure scope, indexes just those files with [tree-sitter](https://tree-sitter.github.io/) into in-memory SQLite, then exposes structural facts via:
 
 - **An MCP server** any MCP-aware agent (Cursor, Claude Code, Cody, Cline, Continue, Windsurf, Zed) speaks natively
 - **A CLI** for direct use, CI integration, scripting
@@ -27,9 +31,9 @@ When an AI agent investigates a bug it reads files one at a time and infers stru
 
 It's session-scoped — built fresh for each invocation, discarded when done. No daemon. No persistent index. No staleness. The graph is small because the failure neighborhood is small.
 
-## Why it's distinct
+## Why Halo is distinct
 
-| | Generic graph indexer | `cgrca` |
+| | Generic graph indexer | Halo |
 |---|---|---|
 | Scope | full repo | failure-scoped (5–10k LOC) |
 | Index time | minutes, then maintained | <1s, fresh each invocation |
