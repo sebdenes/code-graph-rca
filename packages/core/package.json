@@ -5,14 +5,14 @@
   "type": "module",
   "license": "MIT",
   "author": "Sebastien Denes",
-  "homepage": "https://github.com/sebastiendenes/code-graph-rca#readme",
+  "homepage": "https://github.com/sebdenes/code-graph-rca#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sebastiendenes/code-graph-rca.git",
+    "url": "git+https://github.com/sebdenes/code-graph-rca.git",
     "directory": "packages/core"
   },
   "bugs": {
-    "url": "https://github.com/sebastiendenes/code-graph-rca/issues"
+    "url": "https://github.com/sebdenes/code-graph-rca/issues"
   },
   "keywords": [
     "rca",
