@@ -170,16 +170,32 @@ function mostRecentCommit(rcs: RecentChange[]): { sha: string; daysAgo: number }
   return { sha: top.commit, daysAgo: top.daysAgo };
 }
 
-/** Pick top-K untested callers from a flat impact list (one symbol). */
+/**
+ * Pick top-K untested callers from a (possibly aggregated) impact list.
+ *
+ * Dedupes by `${file}:${name}` — the handler concatenates per-symbol impact
+ * lists before calling us, so when two changed symbols share a transitive
+ * caller the same node arrives multiple times. Without this dedupe, the
+ * comment can list the same caller twice (caught on PR #1, the bot's first
+ * self-review). When a node appears multiple times, keep the entry with
+ * the highest `riskScore` so we don't downgrade information.
+ */
 export function pickTopUntested(
   nodes: ImpactNode[],
   limit: number,
 ): UntestedCaller[] {
-  const untested = nodes
-    .filter((n) => n.distance > 0 && n.testCoverage.length === 0)
+  const byKey = new Map<string, ImpactNode>();
+  for (const n of nodes) {
+    if (n.distance <= 0) continue;
+    if (n.testCoverage.length > 0) continue;
+    const key = `${n.file}:${n.name}`;
+    const prev = byKey.get(key);
+    if (!prev || n.riskScore > prev.riskScore) byKey.set(key, n);
+  }
+  const deduped = [...byKey.values()]
     .sort((a, b) => b.riskScore - a.riskScore)
     .slice(0, limit);
-  return untested.map((n) => ({
+  return deduped.map((n) => ({
     name: n.name,
     file: n.file,
     line: n.line,
