@@ -115,24 +115,41 @@ function computePlacements(
     else byFile.set(file, [entry]);
   });
 
+  // Pre-filter files: with athlai-full (6903 files) the per-file × top-N
+  // expansion would emit ~35k label candidates and the 8-direction
+  // collision loop is O(N²) — guaranteed renderer hang. Keep only the
+  // top files by aggregate degree, so smart-labels remains useful at
+  // scope and instant at scale.
+  const MAX_FILES_FOR_LABELS = 30;
+  const fileEntries = [...byFile.entries()];
+  fileEntries.forEach(([, arr]) => arr.sort((a, b) => b.degree - a.degree));
+  fileEntries.sort((a, b) => {
+    const ad = a[1].reduce((s, e) => s + e.degree, 0);
+    const bd = b[1].reduce((s, e) => s + e.degree, 0);
+    return bd - ad;
+  });
+  const topFiles = fileEntries.slice(0, MAX_FILES_FOR_LABELS);
+
   const chosen = new Set<string>();
   if (anchorId) chosen.add(anchorId);
-  byFile.forEach((arr) => {
-    arr.sort((a, b) => b.degree - a.degree);
+  for (const [, arr] of topFiles) {
     for (let i = 0; i < Math.min(TOP_PER_FILE, arr.length); i++) {
       chosen.add(arr[i]!.id);
     }
-  });
+  }
 
-  // Assemble candidates with metadata, anchor first.
-  const all = [...byFile.values()].flat();
+  // Hard cap total candidates. The collision loop is the bottleneck;
+  // 80 labels × 8 directions × O(N) bbox tests = ~50k ops, safe.
+  const MAX_LABELS = 80;
+  const all = topFiles.map(([, arr]) => arr).flat();
   const candidates = all
     .filter((c) => chosen.has(c.id))
     .sort((a, b) => {
       if (a.id === anchorId) return -1;
       if (b.id === anchorId) return 1;
       return b.degree - a.degree;
-    });
+    })
+    .slice(0, MAX_LABELS);
 
   // Convert model-space positions to screen space for collision testing,
   // since the label rectangles are screen-px.
