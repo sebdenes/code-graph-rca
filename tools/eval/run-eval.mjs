@@ -120,7 +120,7 @@ const MODES = String(args.flags.modes ?? 'current,text,file')
 	.map((s) => s.trim())
 	.filter(Boolean);
 
-const KNOWN_MODES = new Set(['current', 'text', 'file', 'baseline-grep']);
+const KNOWN_MODES = new Set(['current', 'text', 'file', 'baseline-grep', 'llm']);
 for (const m of MODES) {
 	if (!KNOWN_MODES.has(m)) {
 		process.stderr.write(`run-eval: unknown mode '${m}'. Known: ${[...KNOWN_MODES].join(',')}\n`);
@@ -133,6 +133,8 @@ const TIMEOUT_MS = Number(args.flags.timeout ?? 30000);
 const TOP_N = Number(args.flags['top-n'] ?? 10);
 const LIMIT = args.flags.limit !== undefined ? Number(args.flags.limit) : Infinity;
 const TEXT_FLAG = process.env.CGRCA_TEXT_FLAG ?? '';
+const LLM_PROVIDER = process.env.CGRCA_LLM_PROVIDER ?? 'anthropic';
+const LLM_MODEL = process.env.CGRCA_LLM_MODEL ?? '';
 
 const OUT_PATH = args.flags.out
 	? resolve(args.flags.out)
@@ -221,7 +223,8 @@ function runCgrca(failureArg, { extraFlags = [] } = {}) {
 		return { ok: false, ms, err: `json parse: ${err.message}` };
 	}
 	const candidates = Array.isArray(parsed.causalCandidates) ? parsed.causalCandidates : [];
-	return { ok: true, ms, candidates };
+	const llm = parsed.llm ?? null;
+	return { ok: true, ms, candidates, llm };
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +393,19 @@ function runMode(mode, entry) {
 	if (mode === 'baseline-grep') {
 		return runBaselineGrep(entry);
 	}
+	if (mode === 'llm') {
+		// Run cgrca with --llm and score against the LLM's chosen rootCause.
+		// The static candidates also come back; we IGNORE them for `llm` mode
+		// scoring (use `text` mode separately to measure the static layer).
+		const extra = ['--llm', '--provider', LLM_PROVIDER];
+		if (LLM_MODEL) extra.push('--model', LLM_MODEL);
+		const r = runCgrca(entry.failure_description, { extraFlags: extra });
+		if (!r.ok) return r;
+		// runCgrca returns parsed JSON in r.candidates from causalCandidates.
+		// We need the llm.verdict field too. Re-run path: parse the raw JSON here.
+		// Cheapest fix: have runCgrca attach the full parsed object so we can read llm.
+		return r;
+	}
 	return { ok: false, ms: 0, err: `unknown mode ${mode}` };
 }
 
@@ -479,7 +495,16 @@ for (const entry of entries) {
 			process.stderr.write(`  [${i}/${entries.length}] ${id} ${mode}: ERR (${res.err})\n`);
 			continue;
 		}
-		const score = scoreCandidates(res.candidates, entry);
+		// LLM mode scores against the verdict's rootCause as a single
+		// "candidate" — the LLM either picked the right thing or it didn't.
+		// rootCause=null counts as a miss (LLM honestly declined).
+		const candidatesForScoring =
+			mode === 'llm' && res.llm
+				? (res.llm.verdict?.rootCause
+					? [{ file: res.llm.verdict.rootCause.file, name: res.llm.verdict.rootCause.symbol, line: res.llm.verdict.rootCause.line }]
+					: [])
+				: res.candidates;
+		const score = scoreCandidates(candidatesForScoring, entry);
 		perEntry.push({
 			id,
 			mode,
@@ -487,10 +512,12 @@ for (const entry of entries) {
 			nCandidates: score.nCandidates,
 			rank: score.rank,
 			score,
+			...(mode === 'llm' && res.llm ? { llmCostUsd: res.llm.cost?.usd ?? 0 } : {}),
 		});
+		const tail = mode === 'llm' && res.llm ? ` $${(res.llm.cost?.usd ?? 0).toFixed(4)}` : '';
 		process.stderr.write(
 			`  [${i}/${entries.length}] ${id} ${mode}: rank=${score.rank || 'miss'} ` +
-				`(${score.nCandidates} cand, ${res.ms}ms)\n`,
+				`(${score.nCandidates} cand, ${res.ms}ms${tail})\n`,
 		);
 	}
 }

@@ -71,6 +71,53 @@ const STOPWORDS = new Set<string>([
 const IDENT_RE = /[A-Za-z_][A-Za-z0-9_]*/g;
 
 /**
+ * Decompose a compound identifier into its sub-words for cross-style matching.
+ *
+ * Rules:
+ * - Split on `_` (snake_case → ["send", "message", "safe"])
+ * - Split at lowercase→uppercase boundaries (camelCase → ["send", "Message"])
+ * - Keep digit runs as their own piece (`v2Foo` → ["v2", "Foo"])
+ * - Lowercase every sub-word so they match both styles uniformly
+ * - Drop sub-words of length < 3 (`is`, `to`, `id` → too noisy)
+ *
+ * Returns the decomposed pieces (NOT the original — caller adds the original
+ * separately if it wants both). Empty list for tokens that decompose to noise.
+ *
+ * Examples:
+ *   "sendMessage"        → ["send", "message"]
+ *   "send_message_safe"  → ["send", "message", "safe"]
+ *   "_strip_markdown"    → ["strip", "markdown"]
+ *   "fetch_planned_events" → ["fetch", "planned", "events"]
+ *   "Login"              → ["login"]
+ *   "id"                 → []   (too short)
+ */
+export function splitCompound(token: string): string[] {
+  if (!token) return [];
+  // Step 1: split on _ → handles snake_case and leading/trailing underscores.
+  // Step 2: each piece, split on lowercase→uppercase OR letter→digit boundaries.
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const piece of token.split("_")) {
+    if (!piece) continue;
+    // Insert a space at boundaries we want to split on, then split on space.
+    const spaced = piece
+      .replace(/([a-z])([A-Z])/g, "$1 $2")        // camelCase boundary
+      .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2")   // ALL-CAPS → Title (ABCThing → ABC Thing)
+      .replace(/([A-Za-z])(\d)/g, "$1 $2")        // letter→digit
+      .replace(/(\d)([A-Za-z])/g, "$1 $2");       // digit→letter
+    for (const sub of spaced.split(/\s+/)) {
+      const lc = sub.toLowerCase();
+      if (lc.length < 3) continue;
+      if (STOPWORDS.has(lc)) continue;
+      if (seen.has(lc)) continue;
+      seen.add(lc);
+      out.push(lc);
+    }
+  }
+  return out;
+}
+
+/**
  * Lift quoted substrings (single or double quote) out of `text`. Returns
  * the stripped tokens (no quote chars) and the input with the quoted
  * regions blanked out so the identifier pass doesn't re-tokenize the
@@ -165,6 +212,8 @@ export function matchTokensAgainstKg(
     file: string | null;
     line: number | null;
     nameSet: Set<string>;
+    /** Sub-word substring hits against s.name (camelCase ↔ snake_case bridge). */
+    subnameSet: Set<string>;
     bodySet: Set<string>;
     importSet: Set<string>;
   }
@@ -182,6 +231,7 @@ export function matchTokensAgainstKg(
         file,
         line,
         nameSet: new Set<string>(),
+        subnameSet: new Set<string>(),
         bodySet: new Set<string>(),
         importSet: new Set<string>(),
       };
@@ -197,11 +247,7 @@ export function matchTokensAgainstKg(
     start_line: number;
   }
 
-  // 1. NAME-MATCH: symbols.name = ? (exact, case-sensitive). Only the
-  //    identifier-shaped tokens are eligible — running a literal like
-  //    "marathon" through this branch is fine but would never match a
-  //    real symbol called `marathon` more often than the literal already
-  //    did via the signature pass, and we'd double-count.
+  // 1a. EXACT NAME-MATCH: symbols.name = ? (case-sensitive). Highest weight.
   const nameStmt = db.prepare(
     `SELECT s.id AS id, s.name AS name, f.path AS path, s.start_line AS start_line
        FROM symbols s
@@ -216,12 +262,46 @@ export function matchTokensAgainstKg(
     }
   }
 
-  // 2. BODY-MATCH: symbols.signature LIKE '%token%'. Restricted to
-  //    LITERAL tokens — these are the high-precision payloads (e.g.
-  //    a misspelled string constant) and matching every identifier
-  //    token against every signature blows up to O(N*M) with terrible
-  //    precision (`session` would fire on every signature mentioning
-  //    a Session typed param).
+  // 1b. SUBSTRING NAME-MATCH (case-insensitive): builds the camelCase ↔
+  //     snake_case bridge that pure exact match misses. We decompose each
+  //     identifier token into its sub-words ("sendMessage" → ["send",
+  //     "message"]) and substring-match LOWER(s.name) against each piece
+  //     of length >= 4 (3-char pieces like "set"/"get"/"add" match too
+  //     much). Smaller weight than exact match — this is recall sugar,
+  //     not the primary signal.
+  //
+  //     Bound runaway: cap rows per substring to 100. Symbols with name
+  //     length >= 5 are eligible (so `i` doesn't hit `i_path`).
+  const subNameStmt = db.prepare(
+    `SELECT s.id AS id, s.name AS name, f.path AS path, s.start_line AS start_line
+       FROM symbols s
+       JOIN files f ON f.id = s.file_id
+      WHERE LOWER(s.name) LIKE ? ESCAPE '\\'
+        AND length(s.name) >= 5
+      LIMIT 100`,
+  );
+  const seenSubName = new Set<string>();
+  const tryNameSubstring = (sub: string): void => {
+    if (sub.length < 4) return;
+    if (seenSubName.has(sub)) return;
+    seenSubName.add(sub);
+    const escaped = sub.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const rows = subNameStmt.all(`%${escaped}%`) as SymRow[];
+    for (const r of rows) {
+      const a = ensure(r.id, r.name, r.path, r.start_line);
+      // Only count if the sub-word didn't already land via exact match
+      // (avoid double-counting). Tracked under the original token bucket.
+      a.subnameSet.add(sub);
+    }
+  };
+  for (const tok of tokens.identifierTokens) {
+    for (const sub of splitCompound(tok)) tryNameSubstring(sub);
+    // Also try the lowercased original — bridges `Login` → `login` etc.
+    tryNameSubstring(tok.toLowerCase());
+  }
+
+  // 2a. LITERAL → SIGNATURE: the original Phase 1 path. High precision
+  //     payloads like `"marathon"` land in default-value signatures.
   const bodyStmt = db.prepare(
     `SELECT s.id AS id, s.name AS name, f.path AS path, s.start_line AS start_line
        FROM symbols s
@@ -229,15 +309,34 @@ export function matchTokensAgainstKg(
       WHERE s.signature LIKE ? ESCAPE '\\'`,
   );
   for (const tok of tokens.literalTokens) {
-    // Escape SQL LIKE wildcards in the user-supplied literal so a token
-    // like `100%` doesn't match every signature. We use backslash as
-    // the LIKE escape (declared on the prepared statement above).
     const escaped = tok.replace(/[\\%_]/g, (ch) => `\\${ch}`);
     const rows = bodyStmt.all(`%${escaped}%`) as SymRow[];
     for (const r of rows) {
       const a = ensure(r.id, r.name, r.path, r.start_line);
       a.bodySet.add(tok);
     }
+  }
+
+  // 2b. IDENTIFIER SUB-WORD → SIGNATURE: identifiers from the prose often
+  //     appear in type hints / default values inside the signature. e.g.
+  //     a desc mentioning "fetch" surfaces functions whose signature
+  //     contains `fetch_planned_events(...)`. Length >= 5 to avoid noise.
+  const seenSigSub = new Set<string>();
+  const trySignatureSubstring = (sub: string, originalTok: string): void => {
+    if (sub.length < 5) return;
+    const key = sub + "\0" + originalTok;
+    if (seenSigSub.has(key)) return;
+    seenSigSub.add(key);
+    const escaped = sub.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const rows = bodyStmt.all(`%${escaped}%`) as SymRow[];
+    for (const r of rows) {
+      const a = ensure(r.id, r.name, r.path, r.start_line);
+      a.bodySet.add(originalTok);
+    }
+  };
+  for (const tok of tokens.identifierTokens) {
+    if (tok.length >= 5) trySignatureSubstring(tok.toLowerCase(), tok);
+    for (const sub of splitCompound(tok)) trySignatureSubstring(sub, tok);
   }
 
   // 3. IMPORT-MATCH: imports.local_name = ?. We promote every symbol in
@@ -278,25 +377,36 @@ export function matchTokensAgainstKg(
     }
   }
 
-  // Score + normalize. Max possible score per symbol is when every
-  // token hits every bucket: nameW * |idTokens| + bodyW * |litTokens|
-  // + importW * |idTokens|. We normalize by that ceiling so totalScore
-  // is always in [0, 1] and doesn't blow up on long failure descriptions.
+  // Score + normalize. Weights tuned so exact name match (3.0) still
+  // dominates substring (1.0) and body (2.0) when both fire — substring is
+  // recall sugar that lifts the floor for camelCase ↔ snake_case bridges
+  // but shouldn't outrank a true name match.
   const NAME_W = 3.0;
+  const SUBNAME_W = 1.0;
   const BODY_W = 2.0;
   const IMPORT_W = 0.5;
+  // Max ceiling: every identifier token AND every sub-word can fire on every
+  // bucket. We cap sub-word count at 3 per token (typical decomposition) so
+  // long failure descriptions don't push the ceiling unrealistically high.
+  const SUBWORDS_PER_TOK = 3;
   const maxRaw =
     NAME_W * tokens.identifierTokens.length +
+    SUBNAME_W * tokens.identifierTokens.length * SUBWORDS_PER_TOK +
     BODY_W * tokens.literalTokens.length +
+    BODY_W * tokens.identifierTokens.length +
     IMPORT_W * tokens.identifierTokens.length;
 
   const out: TokenMatch[] = [];
   for (const [id, a] of acc) {
     const nameMatches = a.nameSet.size;
+    const subnameMatches = a.subnameSet.size;
     const bodyMatches = a.bodySet.size;
     const importMatches = a.importSet.size;
     const raw =
-      NAME_W * nameMatches + BODY_W * bodyMatches + IMPORT_W * importMatches;
+      NAME_W * nameMatches +
+      SUBNAME_W * subnameMatches +
+      BODY_W * bodyMatches +
+      IMPORT_W * importMatches;
     const totalScore = maxRaw > 0 ? raw / maxRaw : 0;
     if (raw === 0) continue;
     out.push({
