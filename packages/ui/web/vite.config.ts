@@ -2,10 +2,16 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import tailwindcss from "tailwindcss";
 import autoprefixer from "autoprefixer";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+// Surface the package version in the AppShell HUD without a manual sync step.
+const pkg = JSON.parse(
+  readFileSync(resolve(here, "..", "package.json"), "utf8"),
+) as { version: string };
 
 // PostCSS config is inlined here because Vite looks for postcss.config.js
 // in the CWD (packages/ui/), not the web/ subdir, and a separate file there
@@ -13,6 +19,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   root: here,
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   resolve: {
     alias: {
       "@": resolve(here, "src"),

@@ -1,0 +1,146 @@
+/* AppShell topbar — Observatory aesthetic.
+ *
+ * Lifted from `_design/observatory-rca-impact/rca-evidence-board.html` and
+ * `views/graph/observatory.css` so the topbar matches the cosmic stages
+ * (Graph / RCA / Impact) sitting below it. Per-tab views render their own
+ * topbars too — these styles are SCOPED to `.app-shell` to avoid bleed.
+ *
+ * Tokens (palette + type) are duplicated locally on purpose: index.css uses
+ * generic Tailwind tokens that other surfaces (e.g. EmptyState) still depend
+ * on, so we don't redefine them globally.
+ */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(180deg, #0c1325 0%, #050810 100%);
+  color: #f5f5f5;
+}
+
+.app-shell-topbar {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 0 28px;
+  height: 56px;
+  border-bottom: 1px solid rgba(245, 245, 245, 0.06);
+  position: relative;
+  z-index: 2;
+}
+
+/* Halo wordmark — italic Newsreader + halo-red dot, lifted from observatory.css */
+.app-shell-topbar .brand-halo {
+  font-family: "Newsreader", Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  color: #f5f5f5;
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.app-shell-topbar .brand-halo .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff5c6a;
+  box-shadow:
+    0 0 0 3px rgba(255, 92, 106, 0.18),
+    0 0 14px rgba(255, 92, 106, 0.55);
+  margin-left: 4px;
+  transform: translateY(-8px);
+}
+
+/* Tabs — JetBrains Mono uppercase 11px, halo-red underline on the active one */
+.app-shell-topbar .tabs {
+  display: flex;
+  gap: 22px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(245, 245, 245, 0.55);
+}
+
+.app-shell-topbar .tabs button {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.app-shell-topbar .tabs button:hover {
+  color: rgba(245, 245, 245, 0.78);
+}
+
+.app-shell-topbar .tabs button.active {
+  color: #f5f5f5;
+}
+
+.app-shell-topbar .tabs button.active::after {
+  content: "";
+  display: block;
+  height: 1px;
+  background: #ff5c6a;
+  margin-top: 4px;
+}
+
+/* Session HUD — JetBrains Mono small caps, low-opacity ink */
+.app-shell-topbar .session {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 18px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: rgba(245, 245, 245, 0.32);
+  text-transform: uppercase;
+}
+
+.app-shell-topbar .session strong {
+  color: rgba(245, 245, 245, 0.78);
+  font-weight: 500;
+}
+
+/* The session picker is the one interactive control on the right.
+ * Style it as a subtle chrome-less mono dropdown so it doesn't break the bar. */
+.app-shell-topbar .session-select {
+  background: transparent;
+  border: 1px solid rgba(245, 245, 245, 0.08);
+  border-radius: 3px;
+  color: rgba(245, 245, 245, 0.78);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
+.app-shell-topbar .session-select:focus {
+  outline: none;
+  border-color: rgba(255, 92, 106, 0.45);
+}
+
+.app-shell-topbar .session-select option {
+  background: #0c1325;
+  color: #f5f5f5;
+}
+
+.app-shell-main {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
