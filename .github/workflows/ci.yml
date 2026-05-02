@@ -43,7 +43,7 @@ jobs:
         # reproducibility on the install-author's platform; CI rebuilds.
         run: |
           rm -rf node_modules package-lock.json
-          npm install --no-audit --no-fund --include=optional
+          npm install --no-audit --no-fund --include=optional --legacy-peer-deps
       - name: Build (core)
         run: npm -w packages/core run build
       - name: Build (ui)
@@ -72,7 +72,7 @@ jobs:
         # too (vite.config.ts is included in the typecheck program).
         run: |
           rm -rf node_modules package-lock.json
-          npm install --no-audit --no-fund --include=optional
+          npm install --no-audit --no-fund --include=optional --legacy-peer-deps
       - name: Build (core)
         # UI tsconfig references `code-graph-rca` (the core package); without
         # building core first, every UI tsc run errors with TS2307.
