@@ -147,6 +147,42 @@ describe("kind='local' symbol extraction (Python)", () => {
     expect(names.has("h")).toBe(true);
   });
 
+  it("extracts `except E as exc` target with type_text=E", async () => {
+    const r = await indexScope({ repoRoot: PY_FIXTURE });
+    const row = r.db
+      .prepare(
+        `SELECT s.name, s.kind, s.type_text, p.name AS parent_name
+           FROM symbols s
+           LEFT JOIN symbols p ON p.id = s.parent_id
+          WHERE s.kind='local' AND s.name='ioe' AND p.name='excepts'`,
+      )
+      .get() as
+        | { name: string; kind: string; type_text: string | null; parent_name: string }
+        | undefined;
+    expect(row).toBeDefined();
+    expect(row!.parent_name).toBe("excepts");
+    expect(row!.type_text).toBe("IOError");
+  });
+
+  it("extracts `with open(...) as f` target (type_text NULL is OK)", async () => {
+    const r = await indexScope({ repoRoot: PY_FIXTURE });
+    const row = r.db
+      .prepare(
+        `SELECT s.name, s.kind, s.type_text, p.name AS parent_name
+           FROM symbols s
+           LEFT JOIN symbols p ON p.id = s.parent_id
+          WHERE s.kind='local' AND s.name='f' AND p.name='withs'`,
+      )
+      .get() as
+        | { name: string; kind: string; type_text: string | null; parent_name: string }
+        | undefined;
+    expect(row).toBeDefined();
+    expect(row!.parent_name).toBe("withs");
+    // type_text is NULL — `open()` return type is hard to infer; the local
+    // is captured anyway so identifier-arg resolution can match `f`.
+    expect(row!.type_text).toBeNull();
+  });
+
   it("extracts for-loop iter vars (single + tuple unpack)", async () => {
     const r = await indexScope({ repoRoot: PY_FIXTURE });
     const rows = r.db

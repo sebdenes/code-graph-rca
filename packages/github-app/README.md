@@ -130,6 +130,63 @@ docker run --rm -p 3000:3000 \
   cgrca-gha
 ```
 
+## Path C — Incident-response surface (Sentry / generic stack traces)
+
+When a production error fires, point Sentry (or your alertmanager / scripts) at
+the same hosted server: cgrca runs RCA against the configured repo at HEAD and
+opens a GitHub issue with the ranked candidates, so the on-call has a head start
+instead of a raw stack trace.
+
+Two endpoints, one handler:
+
+| Endpoint | Auth | Used for |
+| --- | --- | --- |
+| `POST /sentry` | HMAC-sha256 `Sentry-Hook-Signature` header against `SENTRY_WEBHOOK_SECRET` | Sentry "internal integration" / issue-alert webhooks |
+| `POST /incident` | `Authorization: Bearer $INCIDENT_BEARER_TOKEN` | generic JSON `{ issueId, title, failureText }` from any alerting source |
+
+Both routes are **disabled by default** — when neither secret is set they reply
+`503 { "error": "...endpoint disabled..." }` so a public hostname doesn't
+accidentally accept anonymous incident POSTs.
+
+### Environment
+
+| Variable | Purpose |
+| --- | --- |
+| `SENTRY_WEBHOOK_SECRET` | Secret shared with Sentry; HMAC-sha256 over the raw body must match the `Sentry-Hook-Signature` header. |
+| `INCIDENT_BEARER_TOKEN` | Bearer token required on `POST /incident`. |
+| `INCIDENT_REPO` | `owner/repo` of the long-lived clone to RCA against (single repo per install for now). |
+| `INCIDENT_REPO_PATH` | Filesystem path to the long-lived clone. |
+
+### Wire it up in Sentry
+
+1. Sentry → **Settings → Developer Settings → New Internal Integration**.
+2. **Webhook URL:** `https://<your-host>/sentry`
+3. **Webhook secret:** paste the same value as `SENTRY_WEBHOOK_SECRET`.
+4. **Permissions:** `Issues & Events: Read`.
+5. **Webhooks:** subscribe to `issue: created` (and optionally `issue: resolved`).
+6. Install the integration on the project that fires for your prod service.
+
+Re-fires of the same Sentry issue id update the existing GitHub issue in place
+(matched on the hidden `<!-- cgrca-incident:<id> -->` marker), so on-call inboxes
+don't get spammed with N duplicates per outage.
+
+### Generic stack traces (no Sentry)
+
+```bash
+curl -X POST https://<your-host>/incident \
+  -H "Authorization: Bearer $INCIDENT_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "issueId": "ops-2026-05-02-001",
+    "title": "API 500s on /v1/login",
+    "failureText": "TypeError: undefined is not a function\n  at handleLogin (src/api/login.ts:42)"
+  }'
+```
+
+If `runRca` itself fails (parse error, repo mismatch, timeout) the endpoint
+still files a GitHub issue containing `RCA failed: <error>` and the original
+failure text — the alert is never silently dropped.
+
 ## Tests
 
 ```bash

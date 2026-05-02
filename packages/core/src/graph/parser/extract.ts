@@ -151,6 +151,19 @@ export async function extractFile(opts: {
       continue;
     }
 
+    // 1c) Python `as`-pattern target — `except E as exc:` and `with ... as f:`.
+    // The bound name lives in the `as_pattern_target` child (a nested
+    // identifier); when the LHS of the as_pattern is itself an identifier
+    // (the typical `except SomeError as e` shape) we propagate that class
+    // name as `type_text` so receiver-type inference can resolve methods on
+    // the bound local. With-clauses on a call (e.g. `open(...)`) leave
+    // type_text NULL — return-type inference is out of scope.
+    const aspatCap = idx.byCapture.get("symbol.aspattern")?.[0];
+    if (aspatCap) {
+      processAsPattern(aspatCap.node, symbolsByKey);
+      continue;
+    }
+
     // 1) Symbol-defining match
     const primary = pickPrimarySymbolCapture(idx);
     if (primary) {
@@ -889,6 +902,66 @@ function processLoopVarDeclaration(
   for (const nameNode of names) {
     emitLocal(nameNode, loopNode, parentName, endLine, symbolsByKey, null);
   }
+}
+
+/**
+ * Process a Python `as_pattern` node from `except E as exc:` or
+ * `with open(...) as f:`. The bound name lives one level down inside an
+ * `as_pattern_target` (which itself wraps an identifier). When the LHS of
+ * the as_pattern is a bare identifier — the dominant `except SomeError as e`
+ * shape — we propagate that class name as `type_text` so receiver-type
+ * inference (resolve.ts) can resolve `e.args`, `exc.method(...)` etc. to
+ * the exception class's members. For `with ... as f` the LHS is typically
+ * a `call` (open(...)) whose return type we don't infer — type_text stays
+ * NULL and the local is still emitted (the bare presence of `f` as a
+ * symbol unblocks identifier-arg resolution for `do_something(f)`).
+ *
+ * `as_pattern` shape (python tree-sitter grammar):
+ *   as_pattern
+ *     <expr>            ← LHS: identifier | call | attribute | ...
+ *     "as"
+ *     as_pattern_target
+ *       identifier      ← the bound name
+ */
+function processAsPattern(
+  node: Parser.SyntaxNode,
+  symbolsByKey: Map<string, SymbolWithRange>,
+): void {
+  // The as_pattern_target is the second-or-later named child; locate it
+  // explicitly rather than indexing positionally to be defensive against
+  // grammar quirks.
+  let target: Parser.SyntaxNode | null = null;
+  let lhs: Parser.SyntaxNode | null = null;
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (!child) continue;
+    if (child.type === "as_pattern_target") {
+      target = child;
+    } else if (lhs === null) {
+      lhs = child;
+    }
+  }
+  if (!target) return;
+  // The bound name: as_pattern_target wraps a single identifier.
+  let nameNode: Parser.SyntaxNode | null = null;
+  for (let i = 0; i < target.namedChildCount; i++) {
+    const child = target.namedChild(i);
+    if (child && child.type === "identifier") {
+      nameNode = child;
+      break;
+    }
+  }
+  if (!nameNode) return;
+  const enclosing = findEnclosingFunctionNode(node);
+  if (!enclosing) return;
+  const parentName = enclosingFunctionName(enclosing);
+  if (!parentName) return;
+  const endLine = enclosing.endPosition.row + 1;
+  // Type hint: only when LHS is a bare identifier (the `except ExceptionClass
+  // as e` pattern). Skip `call`, `attribute`, tuples, etc.
+  let typeText: string | null = null;
+  if (lhs && lhs.type === "identifier") typeText = lhs.text;
+  emitLocal(nameNode, node, parentName, endLine, symbolsByKey, typeText);
 }
 
 /**

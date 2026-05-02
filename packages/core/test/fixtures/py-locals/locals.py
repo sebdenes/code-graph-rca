@@ -23,3 +23,16 @@ def loops(items, d):
         for j in range(k):
             acc += j
     return acc
+
+
+def excepts(path):
+    try:
+        do_something(path)
+    except IOError as ioe:
+        return str(ioe)
+    return None
+
+
+def withs(path):
+    with open(path) as f:
+        return f.read()

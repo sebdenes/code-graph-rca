@@ -81,6 +81,17 @@
 
 (for_statement) @symbol.loopvar
 
+; `as`-pattern target: `except E as exc:` and `with open(...) as f:` both
+; surface as an `as_pattern` whose second child is an `as_pattern_target`
+; wrapping the bound identifier. Capture the whole `as_pattern` so the
+; extractor can pull the bound name AND, when the LHS is a class identifier
+; (the typical `except SomeError as e` shape), use that class name as
+; type_text — feeding receiver-type inference. With-clauses wrap a `call`
+; (or other expression) on the LHS; type_text stays NULL for those because
+; inferring `open()`'s return type is out of scope here.
+
+(as_pattern) @symbol.aspattern
+
 ; ---------------- Calls ----------------
 
 ; Direct identifier call: foo(...)

@@ -27,6 +27,14 @@ import { clonePrHead } from "./clone.js";
 import { upsertPrComment } from "./idempotency.js";
 import type { PrCommentApi } from "./types.js";
 
+// Re-export so action-cli (and future incident-trigger CLIs) can pull a
+// single entry point — `import { handlePullRequest, handleIncident } from "./handler.js"`.
+export { handleIncident } from "./incident-handler.js";
+export type {
+  HandleIncidentOptions,
+  HandleIncidentResult,
+} from "./incident-handler.js";
+
 /** Minimal PR payload subset we read; matches @octokit/webhooks pull_request payload. */
 export interface PrPayload {
   action: "opened" | "synchronize" | string;
