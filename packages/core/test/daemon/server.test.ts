@@ -156,6 +156,43 @@ describe("cgrcad server", () => {
     expect(goneDefs.length).toBe(0);
   });
 
+  it("`callers` RPC honors minConfidence", async () => {
+    const sock = tmpSocketPath();
+    const handle = startDaemon({ socketPath: sock, takeLock: false });
+    cleanups.push(() => handle.stop());
+    await handle.ready;
+
+    // Baseline: default minConfidence (0.5) should return some callers.
+    const baseline = await callDaemon<{ callers: unknown[] }>(
+      "callers",
+      { repoRoot: TS_FIXTURE, name: "login" },
+      { socketPath: sock, timeoutMs: 30_000 },
+    );
+    // High-confidence filter (0.9) returns at most as many callers as the
+    // baseline — typically strictly fewer once any heuristic edges drop out.
+    const filtered = await callDaemon<{ callers: unknown[] }>(
+      "callers",
+      { repoRoot: TS_FIXTURE, name: "login", minConfidence: 0.9 },
+      { socketPath: sock, timeoutMs: 5_000 },
+    );
+    expect(filtered.callers.length).toBeLessThanOrEqual(baseline.callers.length);
+  });
+
+  it("`changed` RPC honors maxCommits", async () => {
+    const sock = tmpSocketPath();
+    const handle = startDaemon({ socketPath: sock, takeLock: false });
+    cleanups.push(() => handle.stop());
+    await handle.ready;
+
+    const capped = await callDaemon<unknown[]>(
+      "changed",
+      { repoRoot: TS_FIXTURE, name: "login", sinceDays: 3650, maxCommits: 5 },
+      { socketPath: sock, timeoutMs: 30_000 },
+    );
+    expect(Array.isArray(capped)).toBe(true);
+    expect(capped.length).toBeLessThanOrEqual(5);
+  });
+
   it("idle timeout fires and stops the daemon", async () => {
     const sock = tmpSocketPath();
     const handle = startDaemon({

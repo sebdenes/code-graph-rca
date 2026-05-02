@@ -305,6 +305,44 @@ describe("mcp server: daemon routing", () => {
     vi.doUnmock("@modelcontextprotocol/sdk/server/stdio.js");
   });
 
+  it("cgrca_callersOf routes to daemon method=callers even when minConfidence is set", async () => {
+    const mod = await import("../../src/mcp/server.js");
+    await mod._resetCache();
+    await mod.startMcpServer({ repoRoot: REPO });
+    const cb = tools.get("cgrca_callersOf");
+    expect(cb).toBeDefined();
+
+    await cb!({ name: "ingest", depth: 2, minConfidence: 0.9 });
+    const rpcCalls = calls.filter((c) => c.method !== "status" && c.method !== "define");
+    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls[0]!.method).toBe("callers");
+    expect(rpcCalls[0]!.params).toMatchObject({
+      repoRoot: REPO,
+      name: "ingest",
+      depth: 2,
+      minConfidence: 0.9,
+    });
+  });
+
+  it("cgrca_recentlyChangedNear routes to daemon method=changed even when maxCommits is set", async () => {
+    const mod = await import("../../src/mcp/server.js");
+    await mod._resetCache();
+    await mod.startMcpServer({ repoRoot: REPO });
+    const cb = tools.get("cgrca_recentlyChangedNear");
+    expect(cb).toBeDefined();
+
+    await cb!({ name: "ingest", sinceDays: 30, maxCommits: 5 });
+    const rpcCalls = calls.filter((c) => c.method !== "status");
+    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls[0]!.method).toBe("changed");
+    expect(rpcCalls[0]!.params).toMatchObject({
+      repoRoot: REPO,
+      name: "ingest",
+      sinceDays: 30,
+      maxCommits: 5,
+    });
+  });
+
   it("cgrca_recentlyChangedNear routes to daemon method=changed when maxCommits is omitted", async () => {
     const mod = await import("../../src/mcp/server.js");
     await mod._resetCache();

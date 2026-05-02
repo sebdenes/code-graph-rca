@@ -537,7 +537,7 @@ describe("buildCausalChain", () => {
     expect(fatIdx).toBeLessThan(tinyIdx);
   });
 
-  it("calibrated weights — score regression baseline (locks in the 2026-05-02 v2 fit)", () => {
+  it("calibrated weights — score regression baseline (locks in the 2026-05-02 v3 fit)", () => {
     // Tiny fixture exercising every signal so the scored sum is sensitive
     // to all six learned multipliers. If anyone retunes the weights this
     // assertion will fail loudly — pointing them at tools/calibration/fit.mjs.
@@ -590,12 +590,12 @@ describe("buildCausalChain", () => {
     // caller). complexityScore = log2(10/20+1)*0.6 ≈ 0.351 (loc=10).
     // dataflowScore=0 (no resolved CALLS edges in fixture).
     //
-    // Calibrated (v2 weights, dataflow=0): 0.1815*3 + 0*1 + 0.0820*1
-    //   + 0.5108*0 + 0.7840*0.5 + 0.3136*0.351 + 0*0
-    //   = 0.5445 + 0.0820 + 0.3920 + 0.1101 ≈ 1.129
+    // Calibrated (v3 weights, dataflow=0): 0.0766*3 + 0*1 + 0.2133*1
+    //   + 0.4744*0 + 0.8909*0.5 + 0.1679*0.351 + 0*0
+    //   = 0.2298 + 0.2133 + 0.4455 + 0.0589 ≈ 0.947
     // Legacy (all 1.0): 3 + 1 + 1 + 0 + 0.5 + 0.351 + 0 = 5.851
-    expect(cb!.score).toBeGreaterThan(1.05);
-    expect(cb!.score).toBeLessThan(1.20);
+    expect(cb!.score).toBeGreaterThan(0.88);
+    expect(cb!.score).toBeLessThan(1.00);
     expect(lb!.score).toBeGreaterThan(5.5);
     expect(lb!.score).toBeLessThan(6.0);
     // Multipliers must drive a measurable gap between the two paths.

@@ -253,17 +253,15 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ name, depth, minConfidence }) => {
-      // Daemon doesn't accept minConfidence yet — only route when caller didn't pass it.
-      if (typeof minConfidence !== "number") {
-        const params: Record<string, unknown> = { name };
-        if (typeof depth === "number") params.depth = depth;
-        const viaDaemon = await tryDaemon<ReturnType<typeof callersOf>>(
-          "callers", opts.repoRoot, params,
-        );
-        if (viaDaemon !== null) {
-          logVia("cgrca_callersOf", "daemon");
-          return asJson(viaDaemon);
-        }
+      const params: Record<string, unknown> = { name };
+      if (typeof depth === "number") params.depth = depth;
+      if (typeof minConfidence === "number") params.minConfidence = minConfidence;
+      const viaDaemon = await tryDaemon<ReturnType<typeof callersOf>>(
+        "callers", opts.repoRoot, params,
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_callersOf", "daemon");
+        return asJson(viaDaemon);
       }
       logVia("cgrca_callersOf", "in-process");
       const { db } = await ensureIndex(opts.repoRoot);
@@ -338,17 +336,15 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ name, sinceDays, maxCommits }) => {
-      // Daemon doesn't accept maxCommits yet — only route when caller didn't pass it.
-      if (typeof maxCommits !== "number") {
-        const params: Record<string, unknown> = { name };
-        if (typeof sinceDays === "number") params.sinceDays = sinceDays;
-        const viaDaemon = await tryDaemon<ReturnType<typeof recentlyChangedNear>>(
-          "changed", opts.repoRoot, params,
-        );
-        if (viaDaemon !== null) {
-          logVia("cgrca_recentlyChangedNear", "daemon");
-          return asJson(viaDaemon);
-        }
+      const params: Record<string, unknown> = { name };
+      if (typeof sinceDays === "number") params.sinceDays = sinceDays;
+      if (typeof maxCommits === "number") params.maxCommits = maxCommits;
+      const viaDaemon = await tryDaemon<ReturnType<typeof recentlyChangedNear>>(
+        "changed", opts.repoRoot, params,
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_recentlyChangedNear", "daemon");
+        return asJson(viaDaemon);
       }
       logVia("cgrca_recentlyChangedNear", "in-process");
       const { db } = await ensureIndex(opts.repoRoot);

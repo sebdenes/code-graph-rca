@@ -119,67 +119,32 @@
       value: (function_expression))) @symbol.const) @symbol.exported
 
 ; ---------------- Locals ----------------
-; Top-level (depth-1) variable declarations inside a function/method body. We
-; anchor on the enclosing function-shaped node (function_declaration,
-; function_expression, arrow_function, method_definition) so that the
-; statement_block predicate matches ONLY function bodies, never nested
-; if/while/for blocks (those have their own statement_block which is not the
-; body field of any function-shaped node). Destructuring patterns
-; (object_pattern / array_pattern names) are skipped — only an identifier
-; name field matches. Loop iteration vars live inside for_in_statement /
-; for_statement, not the function body's direct children. Arrow /
-; function-expression initializers at local scope are NOT captured here as
-; locals (no negation needed: we promote any local with a value to
-; kind='local'; the extractor stays consistent with the existing top-level
-; @symbol.const treatment for fn-as-const at module scope).
+; Capture every lexical_declaration / variable_declaration node — no anchor.
+; The extractor walks the captured node's ancestors to find the nearest
+; enclosing function-shaped node (function_declaration, function_expression,
+; arrow_function, method_definition); if none exists the local is dropped.
+; This covers depth-1 (top-level body) AND deeper nested-block locals (inside
+; if/while/for/try blocks) in one pattern. Loop-iteration vars are captured
+; via for_in_statement / for_statement below. Destructuring patterns
+; (object_pattern / array_pattern) are expanded by the extractor — it walks
+; into the binding side and emits one local per identifier it finds, skipping
+; nested function bodies along the way.
+;
+; @symbol.localdecl marks the whole declaration so the extractor can locate
+; both the binding-side pattern and the enclosing function. Name capture is
+; deliberately omitted here; the extractor handles the (potentially many)
+; names emitted per declaration.
 
-(function_declaration
-  body: (statement_block
-    (lexical_declaration
-      (variable_declarator
-        name: (identifier) @symbol.name) @symbol.local)))
+(lexical_declaration) @symbol.localdecl
+(variable_declaration) @symbol.localdecl
 
-(function_declaration
-  body: (statement_block
-    (variable_declaration
-      (variable_declarator
-        name: (identifier) @symbol.name) @symbol.local)))
+; Loop iteration variables. for_in_statement covers `for (x of arr)` and
+; `for (x in obj)`; for_statement covers C-style `for (let i = 0; ...)`. The
+; extractor reads the `left` / `initializer` field and emits one local per
+; identifier (handling destructuring patterns the same way as lexical_declaration).
 
-(function_expression
-  body: (statement_block
-    (lexical_declaration
-      (variable_declarator
-        name: (identifier) @symbol.name) @symbol.local)))
-
-(function_expression
-  body: (statement_block
-    (variable_declaration
-      (variable_declarator
-        name: (identifier) @symbol.name) @symbol.local)))
-
-(arrow_function
-  body: (statement_block
-    (lexical_declaration
-      (variable_declarator
-        name: (identifier) @symbol.name) @symbol.local)))
-
-(arrow_function
-  body: (statement_block
-    (variable_declaration
-      (variable_declarator
-        name: (identifier) @symbol.name) @symbol.local)))
-
-(method_definition
-  body: (statement_block
-    (lexical_declaration
-      (variable_declarator
-        name: (identifier) @symbol.name) @symbol.local)))
-
-(method_definition
-  body: (statement_block
-    (variable_declaration
-      (variable_declarator
-        name: (identifier) @symbol.name) @symbol.local)))
+(for_in_statement) @symbol.loopvar
+(for_statement) @symbol.loopvar
 
 ; ---------------- Calls ----------------
 

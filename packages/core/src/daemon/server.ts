@@ -157,7 +157,11 @@ export function startDaemon(opts: DaemonOptions = {}): DaemonHandle {
       case "callers": {
         const db = await getDb(String(params.repoRoot ?? ""));
         const depth = typeof params.depth === "number" ? params.depth : 2;
-        return callersOf(db, String(params.name ?? ""), { depth });
+        const queryOpts: { depth: number; minConfidence?: number } = { depth };
+        if (typeof params.minConfidence === "number") {
+          queryOpts.minConfidence = params.minConfidence;
+        }
+        return callersOf(db, String(params.name ?? ""), queryOpts);
       }
       case "callees": {
         const db = await getDb(String(params.repoRoot ?? ""));
@@ -168,7 +172,12 @@ export function startDaemon(opts: DaemonOptions = {}): DaemonHandle {
         const repoRoot = resolve(String(params.repoRoot ?? ""));
         const db = await getDb(repoRoot);
         const sinceDays = typeof params.sinceDays === "number" ? params.sinceDays : 90;
-        return recentlyChangedNear(db, String(params.name ?? ""), { repoRoot, sinceDays });
+        const maxCommits = typeof params.maxCommits === "number" ? params.maxCommits : 50;
+        return recentlyChangedNear(db, String(params.name ?? ""), {
+          repoRoot,
+          sinceDays,
+          maxCommits,
+        });
       }
       case "rca": {
         const repoRoot = resolve(String(params.repoRoot ?? ""));

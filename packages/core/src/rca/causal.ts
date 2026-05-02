@@ -122,30 +122,32 @@ const DEFAULT_TOP_N = 5;
 // every signal can only *help* a candidate's score (preserves the
 // rationale text's "dominant signal" semantics).
 //
-// Holdout (n=20): top-1 0.000 -> 0.200 (clipped), top-5 0.350 -> 0.450,
-// MRR 0.156 -> 0.304 vs the legacy hand-set weights. Re-scoring the full
-// 101-entry unanchored corpus end-to-end (cgrca rca with these weights):
-// top-1 0.050 -> 0.099, top-5 0.337 -> 0.416, MRR 0.182 -> 0.235.
+// Holdout (n=21, 2026-05-02 v3 fit): top-1 0.333 -> 0.429 (clipped),
+// top-5 0.905 -> 0.810, MRR 0.574 -> 0.585 vs the legacy hand-set weights.
+// The big jump from v2's holdout (top-1 0.20) is mostly because the corpus
+// itself is richer now: weeks-5/6 local-variable extraction grew the
+// arg_bindings.source_symbol_id resolution rate from 22.8% to 81.66%
+// (cgrca) / 77.6% (athlai), so pathBetween + ambiguity counts have more
+// signal to work with.
 //
-// Note on dataflowScore: raw weight = -0.49 (clipped to 0). The signal is
-// strongly correlated with hit-at-1 *when the gold is the candidate
-// inspected* (per-gold-candidate r=0.736, the highest of any feature), but
-// at the per-candidate level it doesn't discriminate gold from non-gold
-// (per-candidate r=-0.07): dataflow paths exist for many topology-neighbor
-// bystanders too. The LR pushes the weight negative; clipping removes it.
-// The infrastructure ships and the rationale text still fires when the
-// signal is dominant — but until the dataflow extractor distinguishes
-// kind='local' (true value provenance) from generic CALLS+arg-binding
-// reachability, the calibrated path runs with W_DATAFLOW=0.
-const W_RECENCY = 0.1815;
-const W_PROXIMITY = 0.0; // raw fit -1.53, clipped — proximity is nearly
+// Note on dataflowScore: raw weight = -0.80 (clipped to 0). At the
+// per-candidate level it still doesn't discriminate gold from non-gold
+// (per-candidate r ≈ -0.06 even after the resolution-rate jump). The
+// extra paths the local extraction surfaces benefit gold and bystanders
+// alike. The infrastructure ships and the rationale text still fires
+// when the signal is dominant — but until the dataflow extractor
+// distinguishes "this candidate is the real value provenance" from
+// "this candidate sits on a graph edge to the anchor", the calibrated
+// path runs with W_DATAFLOW=0.
+const W_RECENCY = 0.0766;
+const W_PROXIMITY = 0.0; // raw fit -1.39, clipped — proximity is nearly
                           // constant within a non-anchor candidate set, so
                           // it carries no discriminative signal here.
-const W_AMBIGUITY = 0.0820;
-const W_COCHANGE = 0.5108;
-const W_SUBSYSTEM = 0.7840;
-const W_COMPLEXITY = 0.3136;
-const W_DATAFLOW = 0.0; // raw fit -0.49, clipped — see note above.
+const W_AMBIGUITY = 0.2133;
+const W_COCHANGE = 0.4744;
+const W_SUBSYSTEM = 0.8909;
+const W_COMPLEXITY = 0.1679;
+const W_DATAFLOW = 0.0; // raw fit -0.80, clipped — see note above.
 
 // Legacy (pre-calibration) multipliers — all 1.0, i.e. raw bucket scores.
 // Data-flow stays at 1.0 here so the legacy A/B path keeps the new signal

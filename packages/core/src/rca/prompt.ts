@@ -1,8 +1,54 @@
+import type { CausalCandidate } from "../types.js";
+import { buildCausalChainSection, buildGraphContext } from "./context.js";
+
 export type FailureScope =
   | { kind: "stack-trace"; text: string }
   | { kind: "failing-test"; path: string; testName?: string }
   | { kind: "symbol"; name: string; file?: string }
   | { kind: "file"; path: string };
+
+/**
+ * Structured input to {@link formatRcaPrompt}. Mirrors the engine's
+ * {@link RcaResult} shape: pure facts, no IO, no Db handles. Consumers that
+ * don't want the markdown prompt can skip this function entirely and walk
+ * `causalCandidates` themselves.
+ */
+export interface PromptInput {
+  /** The original failure scope the engine was seeded with. */
+  failure: FailureScope;
+  /** Resolved scope summary (file count + graph cardinalities). */
+  scope: { files: string[]; symbolCount: number; edgeCount: number };
+  /** Ranked causal-chain shortlist. */
+  causalCandidates: CausalCandidate[];
+  /** Pre-computed first-hypothesis sentence, or null when no candidates. */
+  firstHypothesis: string | null;
+  /** Per-query results that feed the "Graph context" section. */
+  queries: Array<{ name: string; result: unknown }>;
+  /** Anchor symbol the engine settled on, or null. */
+  primarySymbol: string | null;
+}
+
+/**
+ * Render the full markdown RCA prompt from structured facts. Pure function:
+ * no Db access, no IO, no clock. The output is the same protocol the engine's
+ * `runRca` has emitted since v0.1; the split exists so non-prompt consumers
+ * (the CLI's ranked table, MCP, the GitHub-App) can format their own way
+ * without paying for the markdown construction.
+ */
+export function formatRcaPrompt(input: PromptInput): string {
+  const graphContext = buildGraphContext({
+    primarySymbol: input.primarySymbol,
+    scope: input.scope,
+    queries: input.queries,
+  });
+  const causalSection = buildCausalChainSection(input.causalCandidates);
+  return buildPrompt({
+    failure: input.failure,
+    graphContext,
+    causalSection,
+    firstHypothesis: input.firstHypothesis,
+  });
+}
 
 export const RCA_PROTOCOL = `When something does not work — a test fails, a parse errors, a query returns wrong results, a runtime exception fires — do not patch the symptom. Follow this protocol:
 

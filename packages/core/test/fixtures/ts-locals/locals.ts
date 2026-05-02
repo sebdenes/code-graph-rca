@@ -1,8 +1,7 @@
 // Fixture for kind='local' symbol extraction.
 //
-// foo declares two top-level locals (`bar`, `baz`) and one nested local
-// (`nested`) which the extractor should NOT promote (depth > 1). It also
-// destructures (`pair`) which we deliberately skip for now.
+// foo exercises depth-1 + nested-block + object-destructured locals — all
+// promoted to kind='local' as of the loop/destructure expansion.
 export function foo(): number {
   const bar = 1;
   let baz = bar;
@@ -12,6 +11,31 @@ export function foo(): number {
   }
   const { x, y } = { x: 1, y: 2 };
   return baz + x + y;
+}
+
+// loops covers all three for-loop shapes plus a Python-style for-in and
+// nested-loop locals (inner const). The test asserts the iter vars from each
+// loop appear as kind='local' with parent=loops.
+export function loops(items: number[], obj: Record<string, number>): number {
+  let acc = 0;
+  for (const ofVar of items) {
+    acc += ofVar;
+  }
+  for (const inKey in obj) {
+    acc += obj[inKey] ?? 0;
+  }
+  for (let cIdx = 0; cIdx < items.length; cIdx++) {
+    const inner = items[cIdx]!;
+    acc += inner;
+  }
+  return acc;
+}
+
+// Array destructuring with rest. Each element + the rest binding becomes its
+// own kind='local'.
+export function arrayDestr(arr: number[]): number {
+  const [first, second, ...rest] = arr;
+  return (first ?? 0) + (second ?? 0) + rest.length;
 }
 
 // quux passes a local into a callee — exercises the arg-binding-to-local

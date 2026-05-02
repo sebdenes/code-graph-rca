@@ -24,6 +24,20 @@ const SYMBOL_CAPTURES: Record<string, SymbolKind> = {
   "symbol.local": "local",
 };
 
+/**
+ * Identifier-like node types whose `text` is the name of a single binding.
+ * Used by `collectBindingNames` to decide what to emit as a local symbol.
+ * Tree-sitter exposes shorthand_property_identifier_pattern for `{a, b}`
+ * destructuring shorthands; identifier covers normal cases plus the renamed
+ * side of `{a: renamed}`. property_identifier appears as the LHS of pair_pattern
+ * (the original property name); we deliberately skip it — the local introduced
+ * is the renamed identifier, not the source property.
+ */
+const BINDING_IDENTIFIER_TYPES = new Set([
+  "identifier",
+  "shorthand_property_identifier_pattern",
+]);
+
 interface SymbolWithRange extends ExtractedSymbol {
   startIndex: number;
   endIndex: number;
@@ -111,6 +125,30 @@ export async function extractFile(opts: {
 
   for (const match of matches) {
     const idx = indexCaptures(match);
+
+    // 1a) Local declaration (lexical_declaration / variable_declaration / assignment)
+    // — may emit zero or many `kind='local'` symbols depending on the LHS pattern.
+    const localdeclCap = idx.byCapture.get("symbol.localdecl")?.[0];
+    if (localdeclCap) {
+      processLocalDeclaration(
+        localdeclCap.node,
+        symbolsByKey,
+        grammar,
+      );
+      continue;
+    }
+
+    // 1b) Loop iteration variable (for_in_statement / for_statement TS,
+    // for_statement Python). May emit zero or many locals (tuple unpacking).
+    const loopvarCap = idx.byCapture.get("symbol.loopvar")?.[0];
+    if (loopvarCap) {
+      processLoopVarDeclaration(
+        loopvarCap.node,
+        symbolsByKey,
+        grammar,
+      );
+      continue;
+    }
 
     // 1) Symbol-defining match
     const primary = pickPrimarySymbolCapture(idx);
@@ -288,10 +326,10 @@ export async function extractFile(opts: {
  */
 function findEnclosingFunctionNode(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
   let cur: Parser.SyntaxNode | null = node.parent;
-  // Bounded walk to avoid pathological costs on weird trees. Function bodies
-  // wrap declarations as `block`/`statement_block` → function-shaped node, so
-  // 2 hops cover the depth-1 case; we allow a few more for paranoia.
-  for (let i = 0; i < 8 && cur; i++) {
+  // Bounded walk capped at 64 hops — deeply nested if/while/try blocks can
+  // push the function ancestor several levels up, but real code rarely
+  // exceeds a depth of 10. Cap exists to defend against pathological trees.
+  for (let i = 0; i < 64 && cur; i++) {
     switch (cur.type) {
       case "function_declaration":
       case "function_expression":
@@ -480,6 +518,9 @@ function pickPrimarySymbolCapture(idx: RawMatch): {
   kind: SymbolKind;
 } | null {
   // Prefer @symbol.method over @symbol.function when both fire on the same node.
+  // `symbol.local` is no longer driven by queries (locals come through the
+  // localdecl/loopvar paths now); it stays in SYMBOL_CAPTURES only for the
+  // ExtractedSymbol kind enum mapping.
   const ordered = [
     "symbol.method",
     "symbol.function",
@@ -488,7 +529,6 @@ function pickPrimarySymbolCapture(idx: RawMatch): {
     "symbol.const",
     "symbol.enum",
     "symbol.type",
-    "symbol.local",
   ];
   for (const name of ordered) {
     const cap = idx.byCapture.get(name)?.[0];
@@ -571,4 +611,214 @@ function countLoc(text: string): number {
   let n = 1;
   for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) n++;
   return n;
+}
+
+/**
+ * Process a captured `lexical_declaration` / `variable_declaration` (TS) or
+ * `assignment` (Python) node and emit one kind='local' symbol per binding name
+ * on the LHS. Skips:
+ *   - declarations not nested inside any function-shaped node (module-level
+ *     consts are already captured by the dedicated @symbol.const patterns);
+ *   - declarations whose nearest function ancestor is anonymous AND not bound
+ *     to a named declarator (anonymous IIFEs — no addressable parent);
+ *   - subscript/attribute assignments (Python `obj.x = 1`, `arr[0] = 1`) —
+ *     these don't introduce new locals;
+ *   - destructured names beyond the binding identifiers (e.g. property keys
+ *     in `{a: renamed}` emit `renamed`, not `a`).
+ *
+ * Tree-sitter naturally skips comprehensions in Python (their `for in` lives
+ * inside list_comprehension etc., not block) and class/object bodies in TS
+ * (those don't host lexical_declaration). We DO descend into nested lexical
+ * declarations across if/while/for blocks but we stop at function boundaries
+ * — a nested function declaration's locals belong to it, not its enclosing
+ * function.
+ */
+function processLocalDeclaration(
+  declNode: Parser.SyntaxNode,
+  symbolsByKey: Map<string, SymbolWithRange>,
+  grammar: "typescript" | "tsx" | "python",
+): void {
+  // Find the nearest function-shaped ancestor. If none → module-level
+  // declaration, skip (covered by other @symbol.* patterns where applicable).
+  const enclosing = findEnclosingFunctionNode(declNode);
+  if (!enclosing) return;
+  // Defensive: if the path from declNode to enclosing crosses a *closer*
+  // function-shaped node, that closer one is actually the parent. The
+  // ancestor walk in findEnclosingFunctionNode already returns the nearest,
+  // so this is implicit — no extra check needed.
+  const parentName = enclosingFunctionName(enclosing);
+  if (!parentName) return;
+  const endLine = enclosing.endPosition.row + 1;
+
+  // Collect all binding identifier nodes from the LHS of the declaration.
+  // For TS: walk each variable_declarator's name field.
+  // For Python: walk the assignment's left field (skip subscript/attribute).
+  const names: Parser.SyntaxNode[] = [];
+  if (grammar === "python") {
+    const left = declNode.childForFieldName("left");
+    if (!left) return;
+    // Subscript/attribute targets are not locals; skip.
+    if (left.type === "subscript" || left.type === "attribute") return;
+    collectBindingNames(left, names);
+  } else {
+    for (let i = 0; i < declNode.namedChildCount; i++) {
+      const declarator = declNode.namedChild(i);
+      if (!declarator || declarator.type !== "variable_declarator") continue;
+      const name = declarator.childForFieldName("name");
+      if (!name) continue;
+      collectBindingNames(name, names);
+    }
+  }
+
+  for (const nameNode of names) {
+    emitLocal(nameNode, declNode, parentName, endLine, symbolsByKey);
+  }
+}
+
+/**
+ * Process a captured `for_in_statement` / `for_statement` (TS) or
+ * `for_statement` (Python) and emit one kind='local' per identifier in the
+ * iterator binding. Scope: technically loop-only, but we attach to the
+ * enclosing function — false-positive rate is negligible since loop vars
+ * rarely shadow other locals, and the resolver's BFS walks symbols whose
+ * parent_id is the caller anyway.
+ */
+function processLoopVarDeclaration(
+  loopNode: Parser.SyntaxNode,
+  symbolsByKey: Map<string, SymbolWithRange>,
+  grammar: "typescript" | "tsx" | "python",
+): void {
+  const enclosing = findEnclosingFunctionNode(loopNode);
+  if (!enclosing) return;
+  const parentName = enclosingFunctionName(enclosing);
+  if (!parentName) return;
+  const endLine = enclosing.endPosition.row + 1;
+
+  const names: Parser.SyntaxNode[] = [];
+  if (grammar === "python") {
+    // for_statement.left is identifier | pattern_list | tuple_pattern
+    const left = loopNode.childForFieldName("left");
+    if (!left) return;
+    collectBindingNames(left, names);
+  } else if (loopNode.type === "for_in_statement") {
+    // for_in_statement.left is identifier | object_pattern | array_pattern
+    const left = loopNode.childForFieldName("left");
+    if (!left) return;
+    collectBindingNames(left, names);
+  } else if (loopNode.type === "for_statement") {
+    // C-style: initializer is a lexical_declaration (or expression_statement
+    // for `for (i = 0; ...)`). Reuse the lexical-declaration walker.
+    const initializer = loopNode.childForFieldName("initializer");
+    if (!initializer) return;
+    if (
+      initializer.type === "lexical_declaration" ||
+      initializer.type === "variable_declaration"
+    ) {
+      for (let i = 0; i < initializer.namedChildCount; i++) {
+        const declarator = initializer.namedChild(i);
+        if (!declarator || declarator.type !== "variable_declarator") continue;
+        const name = declarator.childForFieldName("name");
+        if (!name) continue;
+        collectBindingNames(name, names);
+      }
+    }
+  }
+
+  for (const nameNode of names) {
+    emitLocal(nameNode, loopNode, parentName, endLine, symbolsByKey);
+  }
+}
+
+/**
+ * Recursively walk a binding pattern, pushing every binding-identifier node
+ * onto `out`. Handles object_pattern (`{a, b: c, ...rest}`), array_pattern
+ * (`[x, y, ...rest]`), pair_pattern (the renamed-side identifier), rest_pattern,
+ * tuple_pattern (Python), pattern_list (Python), list_pattern (Python).
+ *
+ * Skips nested function bodies (defensive — destructuring patterns shouldn't
+ * contain functions, but if some grammar quirk surfaces an arrow_function
+ * default value we don't want to dive into it). Skips assignment_pattern
+ * defaults' RHS for the same reason: the LHS of `{a = 1}` is what binds.
+ */
+function collectBindingNames(
+  node: Parser.SyntaxNode,
+  out: Parser.SyntaxNode[],
+): void {
+  if (BINDING_IDENTIFIER_TYPES.has(node.type)) {
+    out.push(node);
+    return;
+  }
+  switch (node.type) {
+    case "object_pattern":
+    case "array_pattern":
+    case "tuple_pattern":
+    case "list_pattern":
+    case "pattern_list":
+    case "rest_pattern":
+    case "list_splat_pattern":
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const child = node.namedChild(i);
+        if (child) collectBindingNames(child, out);
+      }
+      return;
+    case "pair_pattern": {
+      // pair_pattern: key (property_identifier) : value (identifier|pattern).
+      // The local binding is the *value* side.
+      const value = node.childForFieldName("value");
+      if (value) collectBindingNames(value, out);
+      return;
+    }
+    case "assignment_pattern": {
+      // {a = 1} — the LHS is the binding.
+      const left = node.childForFieldName("left") ?? node.namedChild(0);
+      if (left) collectBindingNames(left, out);
+      return;
+    }
+    case "object_assignment_pattern": {
+      // TS sometimes wraps shorthand-with-default: {a = 1}.
+      const left = node.childForFieldName("left") ?? node.namedChild(0);
+      if (left) collectBindingNames(left, out);
+      return;
+    }
+    default:
+      // Unknown / non-binding node — skip silently. property_identifier
+      // (the key side of pair_pattern) lands here and is correctly ignored.
+      return;
+  }
+}
+
+/**
+ * Build a SymbolWithRange for a single local binding and stash it under a
+ * deduping key. Multiple captures of the same declaration (e.g. an outer
+ * statement-block match overlapping a function-anchored match in the legacy
+ * patterns) collapse to one symbol per (parentName, name, declStart, nameStart).
+ * The nameStart is included so destructured siblings (`const {a, b} = x`)
+ * get distinct keys.
+ */
+function emitLocal(
+  nameNode: Parser.SyntaxNode,
+  declNode: Parser.SyntaxNode,
+  parentName: string,
+  endLine: number,
+  symbolsByKey: Map<string, SymbolWithRange>,
+): void {
+  const name = nameNode.text;
+  if (!name || name.length === 0) return;
+  // Skip Python's _ throwaway and similar — they're noise for resolution.
+  if (name === "_") return;
+  const startLine = declNode.startPosition.row + 1;
+  const signature = firstSignatureLine(declNode);
+  const key = `local:${name}:${parentName}:${declNode.startIndex}:${nameNode.startIndex}`;
+  if (symbolsByKey.has(key)) return;
+  symbolsByKey.set(key, {
+    name,
+    kind: "local",
+    parentName,
+    startLine,
+    endLine,
+    signature,
+    exported: false,
+    startIndex: nameNode.startIndex,
+    endIndex: nameNode.endIndex,
+  });
 }

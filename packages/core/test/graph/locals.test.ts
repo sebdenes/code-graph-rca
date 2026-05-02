@@ -5,6 +5,7 @@ import { indexScope } from "../../src/graph/orchestrator.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(here, "..", "fixtures", "ts-locals");
+const PY_FIXTURE = join(here, "..", "fixtures", "py-locals");
 
 interface LocalRow {
   name: string;
@@ -26,31 +27,76 @@ describe("kind='local' symbol extraction (TypeScript)", () => {
            LEFT JOIN symbols p ON p.id = s.parent_id
           WHERE s.kind = 'local'
             AND p.name = 'foo'
-          ORDER BY s.start_line`,
+          ORDER BY s.start_line, s.name`,
       )
       .all() as LocalRow[];
 
-    expect(rows.map((r) => r.name)).toEqual(["bar", "baz"]);
+    // bar, baz at depth 1; nested + destructured x,y now also captured.
+    const names = rows.map((r) => r.name);
+    expect(names).toContain("bar");
+    expect(names).toContain("baz");
     for (const row of rows) {
       expect(row.kind).toBe("local");
       expect(row.parent_kind).toBe("function");
     }
   });
 
-  it("does NOT extract nested-block locals (depth > 1)", async () => {
+  it("DOES extract nested-block locals (depth > 1)", async () => {
     const r = await indexScope({ repoRoot: FIXTURE });
-    const nested = r.db
-      .prepare("SELECT count(*) AS n FROM symbols WHERE kind='local' AND name='nested'")
-      .get() as { n: number };
-    expect(nested.n).toBe(0);
+    const row = r.db
+      .prepare(
+        `SELECT s.name, p.name AS parent_name
+           FROM symbols s LEFT JOIN symbols p ON p.id = s.parent_id
+          WHERE s.kind='local' AND s.name='nested'`,
+      )
+      .get() as { name: string; parent_name: string } | undefined;
+    expect(row).toBeDefined();
+    expect(row!.parent_name).toBe("foo");
   });
 
-  it("does NOT extract destructured locals (skipped per design)", async () => {
+  it("DOES extract destructured locals as separate rows", async () => {
     const r = await indexScope({ repoRoot: FIXTURE });
-    const xy = r.db
-      .prepare("SELECT count(*) AS n FROM symbols WHERE kind='local' AND name IN ('x','y')")
-      .get() as { n: number };
-    expect(xy.n).toBe(0);
+    const rows = r.db
+      .prepare(
+        `SELECT s.name FROM symbols s
+           LEFT JOIN symbols p ON p.id = s.parent_id
+          WHERE s.kind='local' AND p.name='foo'
+            AND s.name IN ('x','y')`,
+      )
+      .all() as Array<{ name: string }>;
+    const names = new Set(rows.map((r) => r.name));
+    expect(names.has("x")).toBe(true);
+    expect(names.has("y")).toBe(true);
+  });
+
+  it("extracts loop iteration vars (for...of, for...in, C-style for)", async () => {
+    const r = await indexScope({ repoRoot: FIXTURE });
+    const rows = r.db
+      .prepare(
+        `SELECT s.name FROM symbols s
+           LEFT JOIN symbols p ON p.id = s.parent_id
+          WHERE s.kind='local' AND p.name='loops'`,
+      )
+      .all() as Array<{ name: string }>;
+    const names = new Set(rows.map((r) => r.name));
+    expect(names.has("ofVar")).toBe(true);
+    expect(names.has("inKey")).toBe(true);
+    expect(names.has("cIdx")).toBe(true);
+  });
+
+  it("extracts array-destructured locals (with rest)", async () => {
+    const r = await indexScope({ repoRoot: FIXTURE });
+    const rows = r.db
+      .prepare(
+        `SELECT s.name FROM symbols s
+           LEFT JOIN symbols p ON p.id = s.parent_id
+          WHERE s.kind='local' AND p.name='arrayDestr'`,
+      )
+      .all() as Array<{ name: string }>;
+    const names = new Set(rows.map((r) => r.name));
+    expect(names.has("first")).toBe(true);
+    expect(names.has("second")).toBe(true);
+    expect(names.has("rest")).toBe(true);
   });
 
   it("resolves identifier args to a kind='local' source symbol", async () => {
@@ -74,5 +120,46 @@ describe("kind='local' symbol extraction (TypeScript)", () => {
       .get(row[0]!.source_symbol_id) as { name: string; kind: string };
     expect(sym.name).toBe("seed");
     expect(sym.kind).toBe("local");
+  });
+});
+
+describe("kind='local' symbol extraction (Python)", () => {
+  it("extracts top-level + nested-block + tuple-unpacked locals", async () => {
+    const r = await indexScope({ repoRoot: PY_FIXTURE });
+    const rows = r.db
+      .prepare(
+        `SELECT s.name FROM symbols s
+           LEFT JOIN symbols p ON p.id = s.parent_id
+          WHERE s.kind='local' AND p.name='foo'`,
+      )
+      .all() as Array<{ name: string }>;
+    const names = new Set(rows.map((r) => r.name));
+    // depth-1
+    expect(names.has("a")).toBe(true);
+    expect(names.has("b")).toBe(true);
+    // nested-block
+    expect(names.has("nested")).toBe(true);
+    // tuple_pattern unpack: c, e
+    expect(names.has("c")).toBe(true);
+    expect(names.has("e")).toBe(true);
+    // parenthesized tuple_pattern: (g, h)
+    expect(names.has("g")).toBe(true);
+    expect(names.has("h")).toBe(true);
+  });
+
+  it("extracts for-loop iter vars (single + tuple unpack)", async () => {
+    const r = await indexScope({ repoRoot: PY_FIXTURE });
+    const rows = r.db
+      .prepare(
+        `SELECT s.name FROM symbols s
+           LEFT JOIN symbols p ON p.id = s.parent_id
+          WHERE s.kind='local' AND p.name='loops'`,
+      )
+      .all() as Array<{ name: string }>;
+    const names = new Set(rows.map((r) => r.name));
+    expect(names.has("i")).toBe(true);    // for i in items
+    expect(names.has("k")).toBe(true);    // for k, v in d.items()
+    expect(names.has("v")).toBe(true);
+    expect(names.has("j")).toBe(true);    // nested for j in range(k)
   });
 });
