@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import Database from "better-sqlite3";
 import { runRca, type FailureScope } from "./rca/runner.js";
 import { indexScope } from "./graph/orchestrator.js";
+import { walk } from "./graph/walker.js";
 import { openDb, type Db } from "./graph/db.js";
 import {
   definitionOf,
@@ -101,6 +102,16 @@ function parseArgs(argv: string[]): ParsedArgs {
       flags["legacy-weights"] = true;
     } else if (a === "--legacy-parse") {
       flags["legacy-parse"] = true;
+    } else if (a === "--llm") {
+      flags.llm = true;
+    } else if (a === "--provider") {
+      flags.provider = argv[++i] ?? "";
+    } else if (a === "--model") {
+      flags.model = argv[++i] ?? "";
+    } else if (a === "--max-llm-input-tokens") {
+      flags["max-llm-input-tokens"] = argv[++i] ?? "";
+    } else if (a === "--max-llm-output-tokens") {
+      flags["max-llm-output-tokens"] = argv[++i] ?? "";
     } else if (a === "--format") {
       flags.format = argv[++i] ?? "";
     } else if (a.startsWith("--format=")) {
@@ -374,8 +385,74 @@ async function cmdRca(args: ParsedArgs): Promise<number> {
     }
   }
 
+  // v0.5 Phase 2: --llm runs LLM re-rank on top of the static candidates.
+  // We re-index the scope to get a Db handle for body/caller/callee lookups
+  // (runRca closes its Db internally). Wasteful for now; later refactor can
+  // share the index across both paths.
+  let llmResult: import("./rca/llm/index.js").RcaLlmResult | null = null;
+  if (args.flags.llm === true) {
+    if (failure.kind !== "free-text" && failure.kind !== "stack-trace") {
+      // For symbol/file/test inputs the failure description is structured;
+      // we still send it through but it tends to be short.
+    }
+    const description = describeFailure(failure);
+    const provider =
+      typeof args.flags.provider === "string" && args.flags.provider.length > 0
+        ? args.flags.provider
+        : "anthropic";
+    const model =
+      typeof args.flags.model === "string" && args.flags.model.length > 0
+        ? args.flags.model
+        : undefined;
+    const maxIn =
+      typeof args.flags["max-llm-input-tokens"] === "string"
+        ? Number(args.flags["max-llm-input-tokens"])
+        : undefined;
+    const maxOut =
+      typeof args.flags["max-llm-output-tokens"] === "string"
+        ? Number(args.flags["max-llm-output-tokens"])
+        : undefined;
+
+    const { runLlmRca } = await import("./rca/llm/index.js");
+    const { indexScope: idx } = await import("./graph/orchestrator.js");
+    // Free-text returns no seeds via resolveScope (the runner handles that
+    // path internally with a broad scan). For LLM hydration we need a Db
+    // regardless, so always do a broad scan. For structured shapes
+    // (symbol/file/test/stack-trace) we still walk the whole repo budget so
+    // body/caller/callee lookups work even when the underlying RCA result
+    // pulled in only a narrow seed.
+    const broadFiles = collectBroadParseable(repoRoot, budget.maxFiles ?? 200);
+    if (broadFiles.length > 0 && result.causalCandidates.length > 0) {
+      const indexed = await idx({
+        repoRoot,
+        scope: broadFiles,
+        maxFiles: budget.maxFiles ?? 200,
+      });
+      try {
+        llmResult = await runLlmRca({
+          failureDescription: description,
+          candidates: result.causalCandidates,
+          db: indexed.db,
+          repoRoot,
+          provider,
+          ...(model !== undefined ? { model } : {}),
+          ...(maxIn !== undefined && Number.isFinite(maxIn) ? { maxInputTokens: maxIn } : {}),
+          ...(maxOut !== undefined && Number.isFinite(maxOut) ? { maxOutputTokens: maxOut } : {}),
+        });
+      } finally {
+        indexed.db.close();
+      }
+    } else if (result.causalCandidates.length === 0) {
+      result.notes.push("--llm: static RCA returned no candidates; skipped LLM re-rank");
+    } else {
+      result.notes.push("--llm: no parseable files in repo; skipped LLM re-rank");
+    }
+  }
+
   if (wantsJson) {
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    process.stdout.write(
+      JSON.stringify(llmResult ? { ...result, llm: llmResult } : result, null, 2) + "\n",
+    );
   } else if (wantsPrompt) {
     // Legacy behavior: dump the full markdown protocol for paste-into-LLM.
     process.stdout.write(result.prompt);
@@ -389,8 +466,61 @@ async function cmdRca(args: ParsedArgs): Promise<number> {
         notes: result.notes,
       }),
     );
+    if (llmResult) {
+      process.stdout.write("\n" + renderLlmVerdict(llmResult) + "\n");
+    }
   }
   return 0;
+}
+
+function collectBroadParseable(repoRoot: string, maxFiles: number): string[] {
+  // Mirrors runner.ts collectBroadScope but at the CLI layer so --llm has
+  // a Db handle covering the whole repo for body/caller/callee hydration.
+  // Walks the repo respecting .gitignore (via walk()), filters to ts/python.
+  return walk(repoRoot)
+    .filter((f) => f.language === "typescript" || f.language === "python")
+    .slice(0, maxFiles)
+    .map((f) => f.relPath);
+}
+
+function describeFailure(f: FailureScope): string {
+  switch (f.kind) {
+    case "free-text":
+      return f.text;
+    case "stack-trace":
+      return f.text;
+    case "symbol":
+      return `Failure references symbol ${f.name}${f.file ? ` in ${f.file}` : ""}.`;
+    case "file":
+      return `Failure references file ${f.path}.`;
+    case "failing-test":
+      return `Failing test: ${f.path}${f.testName ? ` (${f.testName})` : ""}`;
+  }
+}
+
+function renderLlmVerdict(r: import("./rca/llm/index.js").RcaLlmResult): string {
+  const lines: string[] = [];
+  lines.push(bold(`LLM verdict (${r.provider} · ${r.model})`));
+  if (r.verdict.rootCause) {
+    const rc = r.verdict.rootCause;
+    lines.push(`  Root cause: ${rc.symbol} @ ${rc.file}:${rc.line} (confidence ${rc.confidence.toFixed(2)})`);
+    lines.push(`  Hypothesis: ${rc.hypothesis}`);
+  } else {
+    lines.push("  Root cause: (LLM said no candidate is plausible)");
+  }
+  if (r.verdict.reasoning) lines.push(`  Reasoning: ${r.verdict.reasoning}`);
+  if (r.verdict.alternatives.length > 0) {
+    lines.push(`  Alternatives:`);
+    for (const a of r.verdict.alternatives.slice(0, 3)) {
+      lines.push(`    - ${a.symbol} @ ${a.file}:${a.line}: ${a.why}`);
+    }
+  }
+  lines.push(
+    dim(
+      `  cost: $${r.cost.usd.toFixed(4)} (in=${r.cost.inputTokens} out=${r.cost.outputTokens}) · ${r.latencyMs}ms${r.trimmed ? " · prompt trimmed" : ""}`,
+    ),
+  );
+  return lines.join("\n");
 }
 
 async function cmdIndex(args: ParsedArgs): Promise<number> {
