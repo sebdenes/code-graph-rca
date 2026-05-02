@@ -35,11 +35,15 @@ function copyWasm() {
   const dstDir = join(repoRoot, "dist", "wasm");
   ensureDir(dstDir);
 
-  const parserWasm = require.resolve("web-tree-sitter/tree-sitter.wasm");
-  copyFileSync(parserWasm, join(dstDir, "tree-sitter.wasm"));
+  // web-tree-sitter 0.26 renamed its runtime asset to `web-tree-sitter.wasm`.
+  const parserWasm = require.resolve("web-tree-sitter/web-tree-sitter.wasm");
+  copyFileSync(parserWasm, join(dstDir, "web-tree-sitter.wasm"));
 
-  const grammarsPkg = require.resolve("tree-sitter-wasms/package.json");
-  const grammarsDir = join(dirname(grammarsPkg), "out");
+  // Grammar wasms now come from @vscode/tree-sitter-wasm, which ships
+  // dylink-compatible binaries built with tree-sitter-cli@0.25 — required
+  // for web-tree-sitter@0.26's Language.load.
+  const grammarsPkg = require.resolve("@vscode/tree-sitter-wasm/package.json");
+  const grammarsDir = join(dirname(grammarsPkg), "wasm");
   if (existsSync(grammarsDir)) {
     for (const name of ["typescript", "tsx", "python"]) {
       const file = `tree-sitter-${name}.wasm`;

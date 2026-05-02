@@ -1,6 +1,6 @@
 {
   "name": "code-graph-rca",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "RCA infrastructure for AI-built code. Code knowledge graph + opinionated RCA engine, exposed via MCP (Cursor / Claude Code / Cody / Cline / Continue / Windsurf / Zed) plus CLI and library. RCA is the wedge; the same engine covers code review, refactor blast-radius, and grounding for any agent's structural claims.",
   "type": "module",
   "license": "MIT",
@@ -56,8 +56,8 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.9.0",
     "ignore": "^7.0.5",
-    "tree-sitter-wasms": "^0.1.12",
-    "web-tree-sitter": "^0.24.7"
+    "@vscode/tree-sitter-wasm": "^0.3.1",
+    "web-tree-sitter": "^0.26.8"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",

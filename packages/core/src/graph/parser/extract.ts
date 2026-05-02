@@ -1,4 +1,4 @@
-import Parser from "web-tree-sitter";
+import type { Node, QueryCapture, QueryMatch } from "web-tree-sitter";
 import { getCompiledQuery, loadLanguage, newParser } from "./loader.js";
 import type {
   ArgSourceKind,
@@ -60,22 +60,23 @@ function languageForGrammar(g: "typescript" | "tsx" | "python"): Language {
   return g === "python" ? "python" : "typescript";
 }
 
-function captureText(cap: Parser.QueryCapture): string {
-  return cap.text ?? cap.node.text;
+function captureText(cap: QueryCapture): string {
+  // 0.26 removed `.text` from QueryCapture — node.text is the only source.
+  return cap.node.text;
 }
 
-function firstSignatureLine(node: Parser.SyntaxNode): string {
+function firstSignatureLine(node: Node): string {
   const text = node.text;
   const newline = text.indexOf("\n");
   return (newline < 0 ? text : text.slice(0, newline)).trim().slice(0, 200);
 }
 
 interface RawMatch {
-  byCapture: Map<string, Parser.QueryCapture[]>;
+  byCapture: Map<string, QueryCapture[]>;
 }
 
-function indexCaptures(match: Parser.QueryMatch): RawMatch {
-  const byCapture = new Map<string, Parser.QueryCapture[]>();
+function indexCaptures(match: QueryMatch): RawMatch {
+  const byCapture = new Map<string, QueryCapture[]>();
   for (const cap of match.captures) {
     const list = byCapture.get(cap.name);
     if (list) list.push(cap);
@@ -102,13 +103,27 @@ export async function extractFile(opts: {
 
   const lang = await loadLanguage(grammar);
   const parser = newParser(lang);
+  // 0.26 widened parser.parse()'s return to Tree | null. A null result here
+  // means the source couldn't be parsed at all (extreme size, encoding) —
+  // treat the file as unparsed so callers still get a row.
   const tree = parser.parse(opts.source);
+  if (!tree) {
+    parser.delete();
+    return {
+      path: opts.relPath,
+      language: languageForGrammar(grammar),
+      loc: countLoc(opts.source),
+      symbols: [],
+      edges: [],
+      imports: [],
+    };
+  }
   const query = getCompiledQuery(lang, queryNameForGrammar(grammar));
   const matches = query.matches(tree.rootNode);
 
   const symbolsByKey = new Map<string, SymbolWithRange>();
   const pendingEdges: Array<{
-    fromNode: Parser.SyntaxNode;
+    fromNode: Node;
     toName: string;
     toReceiverName: string | null;
     kind: ExtractedEdge["kind"];
@@ -122,7 +137,7 @@ export async function extractFile(opts: {
   // after symbol extraction. v6: enabled for Python too — receiver-type
   // inference (resolve.ts) needs `type_text` on params (`def f(db: Conn)`)
   // to resolve method calls on `db`.
-  const paramCaptures: Array<{ node: Parser.SyntaxNode; startIndex: number }> = [];
+  const paramCaptures: Array<{ node: Node; startIndex: number }> = [];
 
   for (const match of matches) {
     const idx = indexCaptures(match);
@@ -335,8 +350,8 @@ export async function extractFile(opts: {
  * method_definition, function_definition for Python). Returns null if no such
  * ancestor exists within a small bounded number of hops.
  */
-function findEnclosingFunctionNode(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  let cur: Parser.SyntaxNode | null = node.parent;
+function findEnclosingFunctionNode(node: Node): Node | null {
+  let cur: Node | null = node.parent;
   // Bounded walk capped at 64 hops — deeply nested if/while/try blocks can
   // push the function ancestor several levels up, but real code rarely
   // exceeds a depth of 10. Cap exists to defend against pathological trees.
@@ -361,7 +376,7 @@ function findEnclosingFunctionNode(node: Parser.SyntaxNode): Parser.SyntaxNode |
  * identifier. Returns null when no name can be recovered (anonymous IIFEs
  * etc. — those locals are dropped because they have no addressable parent).
  */
-function enclosingFunctionName(node: Parser.SyntaxNode): string | null {
+function enclosingFunctionName(node: Node): string | null {
   const directName = node.childForFieldName("name");
   if (directName) return directName.text;
   // Anonymous: arrow / function expression assigned somewhere. Walk up one
@@ -381,10 +396,10 @@ function enclosingFunctionName(node: Parser.SyntaxNode): string | null {
  * TS: target node type is `call_expression`. Python: `call`. We accept both
  * regardless of grammar so the caller doesn't have to special-case. */
 function findCallExpression(
-  node: Parser.SyntaxNode,
+  node: Node,
   _grammar: "typescript" | "tsx" | "python",
-): Parser.SyntaxNode | null {
-  let cur: Parser.SyntaxNode | null = node.parent;
+): Node | null {
+  let cur: Node | null = node.parent;
   // At most 4 hops: identifier → attribute|member_expression → ... → call.
   for (let i = 0; i < 4 && cur; i++) {
     if (cur.type === "call_expression" || cur.type === "call") return cur;
@@ -400,7 +415,7 @@ function findCallExpression(
  * `arg_bindings` row via its own pendingEdge.
  */
 function extractArgBindings(
-  callExpr: Parser.SyntaxNode,
+  callExpr: Node,
   grammar: "typescript" | "tsx" | "python",
 ): ExtractedArgBinding[] {
   const argsNode = callExpr.childForFieldName("arguments");
@@ -482,7 +497,7 @@ function classifyArgKind(nodeType: string): ArgSourceKind {
  */
 function attachParamsToSymbols(
   symbols: SymbolWithRange[],
-  paramCaptures: Array<{ node: Parser.SyntaxNode; startIndex: number }>,
+  paramCaptures: Array<{ node: Node; startIndex: number }>,
   grammar: "typescript" | "tsx" | "python",
 ): ExtractedSymbolParams[] {
   if (paramCaptures.length === 0) return [];
@@ -541,7 +556,7 @@ function attachParamsToSymbols(
  * receivers also handles `self` uniformly.
  */
 function parsePythonParameters(
-  node: Parser.SyntaxNode,
+  node: Node,
   owner: SymbolWithRange,
 ): ExtractedParam[] {
   const out: ExtractedParam[] = [];
@@ -622,7 +637,7 @@ function stripPrefix(s: string, p: string): string {
   return s.startsWith(p) ? s.slice(p.length) : s;
 }
 
-function parseFormalParameters(node: Parser.SyntaxNode): ExtractedParam[] {
+function parseFormalParameters(node: Node): ExtractedParam[] {
   const out: ExtractedParam[] = [];
   let position = 0;
   for (let i = 0; i < node.namedChildCount; i++) {
@@ -662,7 +677,7 @@ function parseFormalParameters(node: Parser.SyntaxNode): ExtractedParam[] {
 }
 
 function pickPrimarySymbolCapture(idx: RawMatch): {
-  cap: Parser.QueryCapture;
+  cap: QueryCapture;
   kind: SymbolKind;
 } | null {
   // Prefer @symbol.method over @symbol.function when both fire on the same node.
@@ -691,7 +706,7 @@ function pickPrimarySymbolCapture(idx: RawMatch): {
 function resolveLocalEdges(
   symbols: SymbolWithRange[],
   pending: Array<{
-    fromNode: Parser.SyntaxNode;
+    fromNode: Node;
     toName: string;
     toReceiverName: string | null;
     kind: ExtractedEdge["kind"];
@@ -786,7 +801,7 @@ function countLoc(text: string): number {
  * function.
  */
 function processLocalDeclaration(
-  declNode: Parser.SyntaxNode,
+  declNode: Node,
   symbolsByKey: Map<string, SymbolWithRange>,
   grammar: "typescript" | "tsx" | "python",
 ): void {
@@ -811,7 +826,7 @@ function processLocalDeclaration(
   // (when present) is the annotation. Tuple-unpacking patterns (Python) and
   // destructuring (TS) don't carry per-binding annotations — those locals get
   // typeText=null.
-  const names: Array<{ node: Parser.SyntaxNode; typeText: string | null }> = [];
+  const names: Array<{ node: Node; typeText: string | null }> = [];
   if (grammar === "python") {
     const left = declNode.childForFieldName("left");
     if (!left) return;
@@ -820,7 +835,7 @@ function processLocalDeclaration(
     let typeText: string | null = null;
     const typeNode = declNode.childForFieldName("type");
     if (typeNode) typeText = trimTypeText(typeNode.text);
-    const idNodes: Parser.SyntaxNode[] = [];
+    const idNodes: Node[] = [];
     collectBindingNames(left, idNodes);
     // Per-binding typeText: annotation only applies to single-target
     // assignments. Tuple/list unpacking gets null (annotations on those are a
@@ -836,7 +851,7 @@ function processLocalDeclaration(
       let typeText: string | null = null;
       const typeNode = declarator.childForFieldName("type");
       if (typeNode) typeText = trimTypeText(typeNode.text);
-      const idNodes: Parser.SyntaxNode[] = [];
+      const idNodes: Node[] = [];
       collectBindingNames(name, idNodes);
       const apply = idNodes.length === 1 ? typeText : null;
       for (const n of idNodes) names.push({ node: n, typeText: apply });
@@ -857,7 +872,7 @@ function processLocalDeclaration(
  * parent_id is the caller anyway.
  */
 function processLoopVarDeclaration(
-  loopNode: Parser.SyntaxNode,
+  loopNode: Node,
   symbolsByKey: Map<string, SymbolWithRange>,
   grammar: "typescript" | "tsx" | "python",
 ): void {
@@ -867,7 +882,7 @@ function processLoopVarDeclaration(
   if (!parentName) return;
   const endLine = enclosing.endPosition.row + 1;
 
-  const names: Parser.SyntaxNode[] = [];
+  const names: Node[] = [];
   if (grammar === "python") {
     // for_statement.left is identifier | pattern_list | tuple_pattern
     const left = loopNode.childForFieldName("left");
@@ -924,14 +939,14 @@ function processLoopVarDeclaration(
  *       identifier      ← the bound name
  */
 function processAsPattern(
-  node: Parser.SyntaxNode,
+  node: Node,
   symbolsByKey: Map<string, SymbolWithRange>,
 ): void {
   // The as_pattern_target is the second-or-later named child; locate it
   // explicitly rather than indexing positionally to be defensive against
   // grammar quirks.
-  let target: Parser.SyntaxNode | null = null;
-  let lhs: Parser.SyntaxNode | null = null;
+  let target: Node | null = null;
+  let lhs: Node | null = null;
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (!child) continue;
@@ -943,7 +958,7 @@ function processAsPattern(
   }
   if (!target) return;
   // The bound name: as_pattern_target wraps a single identifier.
-  let nameNode: Parser.SyntaxNode | null = null;
+  let nameNode: Node | null = null;
   for (let i = 0; i < target.namedChildCount; i++) {
     const child = target.namedChild(i);
     if (child && child.type === "identifier") {
@@ -976,8 +991,8 @@ function processAsPattern(
  * defaults' RHS for the same reason: the LHS of `{a = 1}` is what binds.
  */
 function collectBindingNames(
-  node: Parser.SyntaxNode,
-  out: Parser.SyntaxNode[],
+  node: Node,
+  out: Node[],
 ): void {
   if (BINDING_IDENTIFIER_TYPES.has(node.type)) {
     out.push(node);
@@ -1031,8 +1046,8 @@ function collectBindingNames(
  * get distinct keys.
  */
 function emitLocal(
-  nameNode: Parser.SyntaxNode,
-  declNode: Parser.SyntaxNode,
+  nameNode: Node,
+  declNode: Node,
   parentName: string,
   endLine: number,
   symbolsByKey: Map<string, SymbolWithRange>,

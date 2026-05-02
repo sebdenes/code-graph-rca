@@ -1,4 +1,4 @@
-import Parser from "web-tree-sitter";
+import { Parser, Language, Query } from "web-tree-sitter";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,11 +25,22 @@ function bundledWasmDir(): string | null {
 function parserWasmPath(): string {
   const bundled = bundledWasmDir();
   if (bundled) {
-    const p = join(bundled, "tree-sitter.wasm");
+    // 0.26 renamed the runtime wasm asset from `tree-sitter.wasm` to
+    // `web-tree-sitter.wasm`. Accept either name in the bundled dir for
+    // forward/backward compatibility during the migration window.
+    const p = join(bundled, "web-tree-sitter.wasm");
     if (existsSync(p)) return p;
+    const legacy = join(bundled, "tree-sitter.wasm");
+    if (existsSync(legacy)) return legacy;
   }
-  const pkgPath = requireFromHere.resolve("web-tree-sitter/package.json");
-  return join(dirname(pkgPath), "tree-sitter.wasm");
+  // 0.26's package.json restricts subpath access via `exports`, but the wasm
+  // is itself an exported subpath — resolve it directly. Fall back to the
+  // legacy 0.24 asset name for forward compatibility.
+  try {
+    return requireFromHere.resolve("web-tree-sitter/web-tree-sitter.wasm");
+  } catch {
+    return requireFromHere.resolve("web-tree-sitter/tree-sitter.wasm");
+  }
 }
 
 function grammarWasmPath(name: string): string {
@@ -38,8 +49,10 @@ function grammarWasmPath(name: string): string {
     const p = join(bundled, `tree-sitter-${name}.wasm`);
     if (existsSync(p)) return p;
   }
-  const pkgPath = requireFromHere.resolve("tree-sitter-wasms/package.json");
-  return join(dirname(pkgPath), "out", `tree-sitter-${name}.wasm`);
+  // @vscode/tree-sitter-wasm has no `exports` map, so package.json resolves
+  // fine and we can derive the wasm/ directory from there.
+  const pkgPath = requireFromHere.resolve("@vscode/tree-sitter-wasm/package.json");
+  return join(dirname(pkgPath), "wasm", `tree-sitter-${name}.wasm`);
 }
 
 export async function initParser(): Promise<void> {
@@ -56,14 +69,14 @@ export async function initParser(): Promise<void> {
   await parserInitPromise;
 }
 
-const langCache = new Map<string, Parser.Language>();
+const langCache = new Map<string, Language>();
 
-export async function loadLanguage(name: "typescript" | "tsx" | "python"): Promise<Parser.Language> {
+export async function loadLanguage(name: "typescript" | "tsx" | "python"): Promise<Language> {
   await initParser();
   const cached = langCache.get(name);
   if (cached) return cached;
   const wasmBytes = readFileSync(grammarWasmPath(name));
-  const lang = await Parser.Language.load(wasmBytes);
+  const lang = await Language.load(wasmBytes);
   langCache.set(name, lang);
   return lang;
 }
@@ -84,28 +97,29 @@ export function loadQuery(name: "typescript" | "python"): string {
  * Compiling a query is expensive (~6ms per file at scale) and the result is
  * pure with respect to the grammar+source pair, so we cache aggressively.
  *
- * Keyed by Parser.Language object identity via WeakMap so reloaded grammars
+ * Keyed by Language object identity via WeakMap so reloaded grammars
  * (which produce a new Language instance) get a fresh compiled query.
  * Cached queries are NEVER deleted — callers must not call .delete() on them.
  */
-const compiledQueryCache = new WeakMap<Parser.Language, Parser.Query>();
+const compiledQueryCache = new WeakMap<Language, Query>();
 
 export function getCompiledQuery(
-  grammar: Parser.Language,
+  grammar: Language,
   queryName: "typescript" | "python",
-): Parser.Query {
+): Query {
   const cached = compiledQueryCache.get(grammar);
   if (cached) return cached;
   const src = loadQuery(queryName);
-  const q = grammar.query(src);
+  // 0.26 removed Language#query — Query is now constructed directly.
+  const q = new Query(grammar, src);
   compiledQueryCache.set(grammar, q);
   return q;
 }
 
-export function newParser(language: Parser.Language): Parser {
+export function newParser(language: Language): Parser {
   const p = new Parser();
   p.setLanguage(language);
   return p;
 }
 
-export type { Parser };
+export type { Parser, Language, Query };
