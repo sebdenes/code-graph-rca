@@ -54,7 +54,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "better-sqlite3": "^11.3.0",
+    "better-sqlite3": "^12.9.0",
     "ignore": "^7.0.5",
     "tree-sitter-wasms": "^0.1.12",
     "web-tree-sitter": "^0.24.7"
