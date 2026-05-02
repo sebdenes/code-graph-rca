@@ -3,6 +3,7 @@ import { openDb, type Db } from "../../src/graph/db.js";
 import {
   tokenizeFailure,
   matchTokensAgainstKg,
+  splitCompound,
 } from "../../src/rca/textmode.js";
 
 /**
@@ -166,7 +167,9 @@ describe("matchTokensAgainstKg", () => {
     expect(matches.length).toBeGreaterThan(0);
     const buildPlanMatch = matches.find((m) => m.symbolName === "buildPlan");
     expect(buildPlanMatch).toBeDefined();
-    expect(buildPlanMatch!.bodyMatches).toBe(1);
+    // Two body hits: the literal "marathon" (default value) AND the
+    // identifier sub-word "sport" matching the param name in the signature.
+    expect(buildPlanMatch!.bodyMatches).toBe(2);
     db.close();
   });
 
@@ -306,6 +309,125 @@ describe("matchTokensAgainstKg", () => {
       expect(m.totalScore).toBeGreaterThanOrEqual(0);
       expect(m.totalScore).toBeLessThanOrEqual(1);
     }
+    db.close();
+  });
+});
+
+describe("splitCompound", () => {
+  it("splits camelCase at lower→upper boundaries", () => {
+    expect(splitCompound("sendMessage")).toEqual(["send", "message"]);
+    expect(splitCompound("buildPlan")).toEqual(["build", "plan"]);
+  });
+
+  it("splits snake_case on underscores", () => {
+    expect(splitCompound("send_message_safe")).toEqual(["send", "message", "safe"]);
+    expect(splitCompound("_strip_markdown")).toEqual(["strip", "markdown"]);
+    expect(splitCompound("fetch_planned_events")).toEqual(["fetch", "planned", "events"]);
+  });
+
+  it("lowercases pieces and dedupes", () => {
+    expect(splitCompound("ABCThing")).toEqual(["abc", "thing"]);
+    // Same piece should not appear twice (case-insensitive dedupe).
+    expect(splitCompound("Foo_FOO_foo")).toEqual(["foo"]);
+  });
+
+  it("drops sub-words shorter than 3 chars", () => {
+    // "is" / "to" / "Id" / "Ok" → too noisy. "get" survives (len 3).
+    expect(splitCompound("isOk")).toEqual([]);
+    expect(splitCompound("getId")).toEqual(["get"]);
+    expect(splitCompound("isMarathon")).toEqual(["marathon"]);
+  });
+
+  it("returns empty for sub-3-char input", () => {
+    expect(splitCompound("id")).toEqual([]);
+    expect(splitCompound("")).toEqual([]);
+  });
+
+  it("returns single piece for already-atomic identifiers", () => {
+    expect(splitCompound("login")).toEqual(["login"]);
+    expect(splitCompound("Login")).toEqual(["login"]);
+  });
+});
+
+describe("matchTokensAgainstKg — substring + body content (Phase 2 retrieval lift)", () => {
+  it("camelCase prose token finds snake_case symbol via substring", () => {
+    // Prose says "sendMessage", code defines `send_message_safe`.
+    // Pre-Phase-2 matcher missed this entirely (exact-name only).
+    const db = buildDb({
+      files: [{ path: "src/telegram.py" }],
+      symbols: [
+        { file: "src/telegram.py", name: "send_message_safe" },
+        { file: "src/telegram.py", name: "_strip_markdown" },
+        { file: "src/telegram.py", name: "unrelated_helper" },
+      ],
+    });
+    const matches = matchTokensAgainstKg(
+      db,
+      tokenizeFailure("sendMessage fails on malformed Markdown"),
+    );
+    const names = matches.map((m) => m.symbolName);
+    expect(names).toContain("send_message_safe");
+    expect(names).toContain("_strip_markdown");
+    db.close();
+  });
+
+  it("identifier sub-word matches param name in signature", () => {
+    // Prose says "fetch failed", code has `fetch_planned_events(...)`.
+    const db = buildDb({
+      files: [{ path: "src/loader.py" }],
+      symbols: [
+        {
+          file: "src/loader.py",
+          name: "fetch_planned_events",
+          signature: "def fetch_planned_events(athlete_id, oldest, newest)",
+        },
+        {
+          file: "src/loader.py",
+          name: "noise",
+          signature: "def noise(x)",
+        },
+      ],
+    });
+    const matches = matchTokensAgainstKg(
+      db,
+      tokenizeFailure("fetch failed for athlete events"),
+    );
+    expect(matches.find((m) => m.symbolName === "fetch_planned_events")).toBeDefined();
+    db.close();
+  });
+
+  it("exact name match still outranks substring match for the same symbol pair", () => {
+    // Symbol `marathon` should outrank `is_marathon` when prose says
+    // "marathon" — exact match weight (3.0) > substring (1.0).
+    const db = buildDb({
+      files: [{ path: "src/race.py" }],
+      symbols: [
+        { file: "src/race.py", name: "marathon" },
+        { file: "src/race.py", name: "is_marathon" },
+      ],
+    });
+    const matches = matchTokensAgainstKg(db, tokenizeFailure("marathon"));
+    expect(matches[0]?.symbolName).toBe("marathon");
+    db.close();
+  });
+
+  it("substring match doesn't fire on names shorter than 5 chars", () => {
+    // `get` (length 3) shouldn't match every symbol with `get` substring.
+    const db = buildDb({
+      files: [{ path: "src/x.py" }],
+      symbols: [
+        { file: "src/x.py", name: "get" },
+        { file: "src/x.py", name: "fget" },     // 4-char name → skipped by length>=5 guard
+        { file: "src/x.py", name: "getter" },   // 6-char → eligible if substring fires
+      ],
+    });
+    const matches = matchTokensAgainstKg(db, tokenizeFailure("get the value"));
+    // `get` lands via exact name match.
+    expect(matches.find((m) => m.symbolName === "get")).toBeDefined();
+    // `getter` would land via substring — but only if "get" sub-word is >=4 chars.
+    // splitCompound("get") returns []; "the" is a stopword; "value" is len 5
+    // and won't substring-match. So `getter` should NOT show up.
+    expect(matches.find((m) => m.symbolName === "getter")).toBeUndefined();
     db.close();
   });
 });
