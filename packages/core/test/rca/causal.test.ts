@@ -591,4 +591,82 @@ describe("buildCausalChain", () => {
     // Multipliers must drive a measurable gap between the two paths.
     expect(Math.abs(cb!.score - lb!.score)).toBeGreaterThan(2);
   });
+
+  it("data-flow distance ranks an arg-source above a topology-only neighbor", () => {
+    // Fixture: anchor A. Topology has TWO direct callers, X (the gold) and
+    // BYS (a bystander); both at topology distance 1. We then add a CALLS
+    // edge X→A (resolved) so pathBetween(X, A) returns a 2-step path —
+    // dataflowScore for X is 1.5. BYS has no resolved outgoing call to A,
+    // so its dataflowScore is 0. With dataflow weight 1.0 the gap should be
+    // enough to break the topology tie and put X above BYS.
+    const db = openDb({});
+    const insFile = db.prepare(
+      "INSERT INTO files (path, language, subsystem, loc) VALUES (?, 'typescript', ?, 0)",
+    );
+    const insSym = db.prepare(
+      "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported) VALUES (?, ?, 'function', NULL, 1, 10, NULL, 0)",
+    );
+    const fid = insFile.run("src/a.ts", "core").lastInsertRowid as number;
+    const aId = insSym.run(fid, "A").lastInsertRowid as number;
+    const xId = insSym.run(fid, "X").lastInsertRowid as number;
+    insSym.run(fid, "BYS").lastInsertRowid as number;
+    // Resolved CALLS edge X→A so pathBetween(X, A) is a real 2-step path.
+    db.prepare(
+      "INSERT INTO edges (from_symbol_id, to_symbol_id, to_name, kind, confidence, call_line) VALUES (?, ?, 'A', 'CALLS', 1.0, NULL)",
+    ).run(xId, aId);
+
+    const callerTree: CallerTree = {
+      target: "A",
+      callers: [
+        {
+          name: "X",
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [],
+          callers: [],
+        },
+        {
+          name: "BYS",
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [],
+          callers: [],
+        },
+      ],
+    };
+    const calleeTree: CalleeTree = { source: "A", callees: [] };
+
+    const out = buildCausalChain(
+      {
+        anchor: { name: "A", file: "src/a.ts", line: 1, subsystem: "core" },
+        callerTree,
+        calleeTree,
+        db,
+      },
+      // Use legacy weights to avoid proximity's calibrated weight-0 collapse:
+      // both candidates are direct callers (proximity=1) so under calibrated
+      // weights they tie on every signal except dataflow — the test still
+      // works, but legacy makes the *intent* clearer (without dataflow they
+      // would tie exactly; with dataflow X wins).
+      { topN: 5, useLegacyWeights: true },
+    );
+
+    const byName = new Map(out.map((c) => [c.name, c]));
+    const x = byName.get("X");
+    const bys = byName.get("BYS");
+    expect(x).toBeDefined();
+    expect(bys).toBeDefined();
+    expect(x!.signals.dataflowScore).toBeGreaterThan(0);
+    expect(bys!.signals.dataflowScore).toBe(0);
+    expect(x!.score).toBeGreaterThan(bys!.score);
+    const xIdx = out.findIndex((c) => c.name === "X");
+    const bysIdx = out.findIndex((c) => c.name === "BYS");
+    expect(xIdx).toBeLessThan(bysIdx);
+    // Rationale should call out the data-flow hops when dominant.
+    if (x!.signals.dataflowScore >= x!.signals.proximityScore) {
+      expect(x!.rationale.toLowerCase()).toContain("data-flow");
+    }
+  });
 });

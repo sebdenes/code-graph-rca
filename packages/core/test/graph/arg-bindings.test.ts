@@ -46,12 +46,14 @@ describe("arg_bindings extraction (TypeScript)", () => {
     });
   });
 
-  it("resolves identifier-typed args to source_symbol_id when same-file symbol exists", async () => {
-    // handleRequest passes `userId` (a param) to save(userId). The arg is an
-    // `identifier` and `userId` is a parameter — not a top-level symbol — so
-    // resolveArgBindingSources intentionally leaves source_symbol_id NULL.
-    // This test pins that behavior so we know the resolver is *running* (not
-    // crashing) and only resolving the cases it should.
+  it("resolves identifier-typed args to the caller's param-as-symbol row", async () => {
+    // handleRequest passes `userId` (its formal param) to save(userId). The
+    // arg is an `identifier`. With param-as-symbol promotion (insertExtracted
+    // materialises a kind='param' symbol per param), identifier args
+    // matching a caller's formal param now resolve to that synthetic row.
+    // Before promotion this returned NULL; kept here as a regression on the
+    // intentional behavior change that lifts identifier-arg resolution from
+    // ~1% to >40% on the cgrca self-index.
     const r = await indexScope({ repoRoot: FIXTURE });
     const row = r.db
       .prepare(
@@ -69,7 +71,18 @@ describe("arg_bindings extraction (TypeScript)", () => {
     expect(row).toHaveLength(1);
     expect(row[0]!.source_kind).toBe("identifier");
     expect(row[0]!.source_text).toBe("userId");
-    // Same-file resolver doesn't match params (intentional — no symbols row).
-    expect(row[0]!.source_symbol_id).toBeNull();
+    const sid = row[0]!.source_symbol_id;
+    expect(sid).not.toBeNull();
+    const sym = r.db
+      .prepare(
+        `SELECT s.name, s.kind, p.name AS parent_name
+           FROM symbols s
+           LEFT JOIN symbols p ON p.id = s.parent_id
+          WHERE s.id = ?`,
+      )
+      .get(sid) as { name: string; kind: string; parent_name: string | null };
+    expect(sym.name).toBe("userId");
+    expect(sym.kind).toBe("param");
+    expect(sym.parent_name).toBe("handleRequest");
   });
 });

@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { openDb, type Db } from "./db.js";
 import { walk, subsystemOf, type WalkOptions } from "./walker.js";
 import { extractFile } from "./parser/extract.js";
 import { resolveEdges } from "./resolve.js";
+import { batchHashObjects, getAllCached, putCached } from "../daemon/cache.js";
 import type { ExtractedFile } from "../types.js";
 
 export interface IndexOptions extends WalkOptions {
@@ -49,6 +51,43 @@ export async function indexScope(opts: IndexOptions): Promise<IndexResult> {
   const files = walk(opts.repoRoot, opts);
 
   // Pass 1 — sequential extract. Workers come in slice 3.
+  //
+  // Blob-sha cache: before parsing, batch `git hash-object` for every
+  // parseable file in a single subprocess (~50ms even at 10k files).
+  // Any path whose sha matches a row in `blob_cache` reuses the cached
+  // `ExtractedFile` and skips tree-sitter entirely. This is the
+  // half-shipped daemon win from week 3 — re-indexing an unchanged
+  // repo becomes hashing + DB reads instead of N parses.
+  //
+  // Fallback: outside a git repo (or when `git hash-object` fails),
+  // we fall back to in-process sha256 of the file contents. Git is
+  // the optimal path because one spawn covers thousands of files;
+  // sha256 is the safety net and adds a per-file read+digest.
+  const parseable = files.filter((f) => f.language !== "unparsed");
+  const parseableAbs = parseable.map((f) => f.absPath);
+  const gitShas = batchHashObjects(opts.repoRoot, parseableAbs);
+  const shaByAbs = new Map<string, string>();
+  // sha256 fallback reads the file to hash it; stash the read so the
+  // miss path below doesn't re-read.
+  const sourceCache = new Map<string, string>();
+  for (const f of parseable) {
+    const git = gitShas.get(f.absPath);
+    if (git) {
+      shaByAbs.set(f.absPath, git);
+    } else {
+      const src = safeRead(f.absPath);
+      if (src !== null) {
+        shaByAbs.set(f.absPath, "s:" + createHash("sha256").update(src).digest("hex"));
+        sourceCache.set(f.absPath, src);
+      }
+    }
+  }
+
+  // Bulk-load the cache once. One SELECT beats N point lookups, and
+  // we defer JSON.parse until we confirm the blob_sha actually matches —
+  // a row whose sha is stale wastes a parse otherwise.
+  const cacheRows = opts.persist ? getAllCached(db) : new Map<string, { blobSha: string; json: string }>();
+
   const extracted: ExtractedFile[] = [];
   for (const f of files) {
     if (f.language === "unparsed") {
@@ -63,10 +102,26 @@ export async function indexScope(opts: IndexOptions): Promise<IndexResult> {
       });
       continue;
     }
-    const source = safeRead(f.absPath);
+    const sha = shaByAbs.get(f.absPath);
+    if (sha) {
+      const row = cacheRows.get(f.relPath);
+      if (row && row.blobSha === sha) {
+        try {
+          extracted.push(JSON.parse(row.json) as ExtractedFile);
+          continue;
+        } catch {
+          // Corrupt cache row — fall through to re-extract.
+        }
+      }
+    }
+    const source = sourceCache.get(f.absPath) ?? safeRead(f.absPath);
+    sourceCache.delete(f.absPath);
     if (source === null) continue;
     const out = await extractFile({ relPath: f.relPath, source });
-    if (out) extracted.push(out);
+    if (out) {
+      extracted.push(out);
+      if (sha) putCached(db, f.relPath, sha, out);
+    }
   }
 
   insertExtracted(db, opts.repoRoot, extracted);
@@ -99,6 +154,17 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
   );
   const insertParam = db.prepare(
     "INSERT INTO params (symbol_id, position, name, type_text, has_default) VALUES (?, ?, ?, ?, ?)",
+  );
+  // Synthetic param-as-symbol row. arg_bindings.source_symbol_id (FK →
+  // symbols.id) can't target the params table directly, so identifier args
+  // resolving to a caller's formal param would otherwise stay NULL —
+  // leaving pathBetween's arg-flow traversal with no producer node to land
+  // on. Promoting params to kind='param' rows in `symbols` (this round's
+  // change) lifts identifier-arg resolution from ~1% to >40% on cgrca
+  // self-index. start_line/end_line copy the function's range so recency
+  // hydration for a param degrades into the enclosing function.
+  const insertParamSymbol = db.prepare(
+    "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported) VALUES (?, ?, 'param', ?, ?, ?, NULL, 0)",
   );
   const insertArgBinding = db.prepare(
     "INSERT INTO arg_bindings (edge_id, position, source_kind, source_text, source_symbol_id) VALUES (?, ?, ?, ?, NULL)",
@@ -171,13 +237,32 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
       // (kind, parentName, name) key the edge loop uses. Only TS extracts
       // these; for Python `symbolParams` is undefined and this loop is a
       // no-op.
+      //
+      // Also materialise each param as a `kind='param'` row in `symbols` so
+      // arg_bindings.source_symbol_id can target it later (FK targets
+      // symbols, not params). Without this promotion, identifier-arg
+      // resolution stays at ~1% — only top-level same-file matches resolve.
+      // With it, the dominant case (a caller forwarding a formal param into
+      // a callee) becomes a real edge in the data-flow graph that
+      // pathBetween can traverse end-to-end.
+      //
+      // We look the owner's start/end up by id rather than caching it during
+      // the symbol loop above to keep the diff minimal vs the concurrently
+      // edited symbol-insertion block. One sqlite call per function is
+      // negligible against the per-file edge cost we already pay.
       if (f.symbolParams) {
+        const findOwnerRange = db.prepare(
+          "SELECT start_line, end_line FROM symbols WHERE id = ?",
+        );
         for (const sp of f.symbolParams) {
           const key = sp.ownerParentName
             ? `${sp.ownerKind}:${sp.ownerParentName}.${sp.ownerName}`
             : `${sp.ownerKind}:${sp.ownerName}`;
           const symbolId = symbolIdsByKey.get(key);
           if (!symbolId) continue;
+          const range = findOwnerRange.get(symbolId) as
+            | { start_line: number; end_line: number }
+            | undefined;
           for (const p of sp.params) {
             insertParam.run(
               symbolId,
@@ -186,6 +271,15 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
               p.typeText,
               p.hasDefault ? 1 : 0,
             );
+            if (range) {
+              insertParamSymbol.run(
+                fileId,
+                p.name,
+                symbolId,
+                range.start_line,
+                range.end_line,
+              );
+            }
           }
         }
       }

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, openSync, closeSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, unlinkSync, writeFileSync, openSync, closeSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -85,6 +85,75 @@ describe("cgrcad server", () => {
     expect(acquireLock()).toBe(true);
     cleanups.push(() => releaseLock());
     expect(isLiveLock()).toBe(true);
+  });
+
+  it("fs-watcher picks up new, modified, and deleted files without explicit re-index", async () => {
+    const sock = tmpSocketPath();
+    // Build a tiny throwaway repo so we can mutate it freely. realpath
+    // through /var → /private/var on macOS so the daemon's `repos` key
+    // matches the path the test passes to RPCs.
+    const repoRaw = mkdtempSync(join(tmpdir(), "cgrcad-fixture-"));
+    cleanups.push(() => rmSync(repoRaw, { recursive: true, force: true }));
+    const repo = realpathSync(repoRaw);
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(
+      join(repo, "src", "seed.ts"),
+      "export function seed() { return 1; }\n",
+    );
+
+    const handle = startDaemon({ socketPath: sock, takeLock: false });
+    cleanups.push(() => handle.stop());
+    await handle.ready;
+
+    // Bootstrap the repo (this also starts the watcher).
+    await callDaemon(
+      "define",
+      { repoRoot: repo, name: "seed" },
+      { socketPath: sock, timeoutMs: 30_000 },
+    );
+    const watcher = handle.watchers.get(repo);
+    expect(watcher).toBeDefined();
+
+    // 1. New file is picked up.
+    writeFileSync(
+      join(repo, "src", "added.ts"),
+      "export function newThing() { return 42; }\n",
+    );
+    // Wait a tick longer than the default 150ms debounce, then flush.
+    await new Promise((r) => setTimeout(r, 200));
+    await watcher!.flush();
+    const newDefs = await callDaemon<Array<{ name: string }>>(
+      "define",
+      { repoRoot: repo, name: "newThing" },
+      { socketPath: sock, timeoutMs: 5_000 },
+    );
+    expect(newDefs.length).toBeGreaterThan(0);
+    expect(newDefs[0]!.name).toBe("newThing");
+
+    // 2. Modifying an existing file surfaces the new symbol.
+    writeFileSync(
+      join(repo, "src", "seed.ts"),
+      "export function seed() { return 1; }\nexport function laterAdded() { return 2; }\n",
+    );
+    await new Promise((r) => setTimeout(r, 200));
+    await watcher!.flush();
+    const laterDefs = await callDaemon<Array<{ name: string }>>(
+      "define",
+      { repoRoot: repo, name: "laterAdded" },
+      { socketPath: sock, timeoutMs: 5_000 },
+    );
+    expect(laterDefs.length).toBeGreaterThan(0);
+
+    // 3. Deleting a file drops its symbols.
+    unlinkSync(join(repo, "src", "added.ts"));
+    await new Promise((r) => setTimeout(r, 200));
+    await watcher!.flush();
+    const goneDefs = await callDaemon<Array<{ name: string }>>(
+      "define",
+      { repoRoot: repo, name: "newThing" },
+      { socketPath: sock, timeoutMs: 5_000 },
+    );
+    expect(goneDefs.length).toBe(0);
   });
 
   it("idle timeout fires and stops the daemon", async () => {

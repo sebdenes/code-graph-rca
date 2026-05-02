@@ -31,6 +31,26 @@ export function getCached(db: Db, filePath: string): CachedExtraction | null {
   }
 }
 
+/**
+ * Bulk variant of `getCached` that reads every cache row in a single
+ * SELECT and returns blob_sha + raw JSON keyed by file_path. Defers
+ * `JSON.parse` to the caller so we only pay the parse on confirmed
+ * sha hits — misses skip the parse entirely. This is the hot path
+ * for `indexScope` warm runs (one SELECT instead of N).
+ */
+export function getAllCached(
+  db: Db,
+): Map<string, { blobSha: string; json: string }> {
+  const rows = db
+    .prepare(
+      "SELECT file_path AS filePath, blob_sha AS blobSha, extracted_json AS json FROM blob_cache",
+    )
+    .all() as Array<{ filePath: string; blobSha: string; json: string }>;
+  const out = new Map<string, { blobSha: string; json: string }>();
+  for (const r of rows) out.set(r.filePath, { blobSha: r.blobSha, json: r.json });
+  return out;
+}
+
 export function putCached(
   db: Db,
   filePath: string,

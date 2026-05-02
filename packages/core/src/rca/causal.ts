@@ -1,4 +1,5 @@
 import type { Db } from "../graph/db.js";
+import { pathBetween } from "../graph/queries.js";
 import type {
   CallerNode,
   CallerTree,
@@ -93,6 +94,16 @@ const SUBSYSTEM_MATCH = 0.5;
 
 const COMPLEXITY_MAX = 1.5;
 
+// Data-flow distance signal. pathBetween over CALLS + arg-binding edges; the
+// shortest hop count from candidate → anchor is decayed linearly. dist=1
+// (direct flow) yields 1.5, dist=4 yields 0.3, no path within DATAFLOW_MAX_HOPS
+// yields 0. Capped at the same magnitude as the complexity bonus so a single
+// data-flow hop can plausibly outweigh proximity+ambiguity, but cannot
+// monopolise the score.
+const DATAFLOW_MAX = 1.5;
+const DATAFLOW_DECAY_PER_HOP = 0.4;
+const DATAFLOW_MAX_HOPS = 4;
+
 const DEFAULT_RECENCY_DAYS = 90;
 const DEFAULT_TOP_N = 5;
 
@@ -121,6 +132,8 @@ const W_SUBSYSTEM = 0.8086;
 const W_COMPLEXITY = 0.4069;
 
 // Legacy (pre-calibration) multipliers — all 1.0, i.e. raw bucket scores.
+// Data-flow defaults to 1.0 here too; the next calibration round will
+// re-tune all seven weights together.
 const LEGACY_W = {
   recency: 1.0,
   proximity: 1.0,
@@ -128,7 +141,13 @@ const LEGACY_W = {
   coChange: 1.0,
   subsystem: 1.0,
   complexity: 1.0,
+  dataflow: 1.0,
 };
+// Data-flow weight stays at 1.0 in the calibrated block too — week-3's
+// logistic regression had no data-flow column in its feature matrix, so we
+// can't use the existing fit. Holding it at 1.0 (same as legacy) lets us
+// measure the lift purely from the new signal; week-5 will refit including
+// data-flow alongside the existing six.
 const CALIBRATED_W = {
   recency: W_RECENCY,
   proximity: W_PROXIMITY,
@@ -136,6 +155,7 @@ const CALIBRATED_W = {
   coChange: W_COCHANGE,
   subsystem: W_SUBSYSTEM,
   complexity: W_COMPLEXITY,
+  dataflow: 1.0,
 };
 
 export function buildCausalChain(
@@ -197,15 +217,26 @@ export function buildCausalChain(
         ? Math.min(Math.log2(loc / 20 + 1) * 0.6, COMPLEXITY_MAX)
         : 0;
 
+    // Data-flow distance: shortest pathBetween hop-count from this candidate
+    // back to the anchor over CALLS + arg-binding flow edges. The anchor
+    // itself trivially has dist=1 (single-step seed path); we map that to 0
+    // so the anchor doesn't get a free 1.5 boost from the new signal — the
+    // anchor already gets PROXIMITY_ANCHOR.
+    const dataflowScore = c.role === "anchor"
+      ? 0
+      : computeDataflowScore(input.db, c.name, input.anchor.name);
+
     // Calibrated weighted sum (per-signal multipliers from logistic
-    // regression fit; see weight block at top of file).
+    // regression fit; see weight block at top of file). Data-flow's weight
+    // stays at 1.0 in both blocks until week-5 re-calibrates.
     const score =
       W.recency * recencyScore +
       W.proximity * proximityScore +
       W.ambiguity * ambiguityScore +
       W.coChange * coChangeScore +
       W.subsystem * subsystemScore +
-      W.complexity * complexityScore;
+      W.complexity * complexityScore +
+      W.dataflow * dataflowScore;
 
     const signals = {
       recencyScore,
@@ -214,6 +245,7 @@ export function buildCausalChain(
       coChangeScore,
       subsystemScore,
       complexityScore,
+      dataflowScore,
     };
 
     const rationale = buildRationale(c, signals, unresolved);
@@ -368,6 +400,38 @@ function computeAmbiguityScore(unresolvedCount: number): number {
   return AMBIGUITY_4_PLUS;
 }
 
+/**
+ * Compute the data-flow score for `name` against `anchorName` using
+ * pathBetween over CALLS + arg-binding edges. The hop-count `dist` returned
+ * by pathBetween includes the seed node, so dist=1 means same-symbol (no
+ * edges traversed); dist=2 means one edge. We map "edges crossed" =
+ * `dist - 1` to a linear decay: 1 edge → 1.5, 2 edges → 1.1, 3 edges → 0.7,
+ * 4 edges → 0.3, deeper or no path → 0.
+ *
+ * Wrapped in try/catch because pathBetween hits sqlite — a corrupt or
+ * concurrently-modified Db should never sink the whole scorer.
+ */
+function computeDataflowScore(
+  db: Db,
+  name: string,
+  anchorName: string,
+): number {
+  if (name === anchorName) return 0;
+  let stepCount = Infinity;
+  try {
+    const path = pathBetween(db, name, anchorName, {
+      maxDepth: DATAFLOW_MAX_HOPS,
+    });
+    if (path && path.length > 0) stepCount = path.length;
+  } catch {
+    return 0;
+  }
+  if (stepCount === Infinity) return 0;
+  const edges = stepCount - 1;
+  if (edges <= 0 || edges > DATAFLOW_MAX_HOPS) return 0;
+  return Math.max(0, DATAFLOW_MAX - DATAFLOW_DECAY_PER_HOP * (edges - 1));
+}
+
 function computeCoChange(
   candidates: RawCandidate[],
   recencyDays: number,
@@ -430,11 +494,16 @@ function buildRationale(
     coChangeScore: number;
     subsystemScore: number;
     complexityScore: number;
+    dataflowScore: number;
   },
   unresolved: string[],
 ): string {
-  // Pick the dominant signal (highest contribution; ties broken by a fixed order).
+  // Pick the dominant signal (highest contribution; ties broken by a fixed
+  // order). Data-flow is checked before co-change because a direct data-flow
+  // hop is more concrete causal evidence ("X reaches the anchor in 2 frames")
+  // than a shared sha.
   const entries: Array<[string, number]> = [
+    ["dataflow", signals.dataflowScore],
     ["coChange", signals.coChangeScore],
     ["recency", signals.recencyScore],
     ["ambiguity", signals.ambiguityScore],
@@ -452,6 +521,16 @@ function buildRationale(
 
   const newest = c.recentChanges[0];
 
+  if (dominantKey === "dataflow" && signals.dataflowScore > 0) {
+    // Invert the decay to recover the hop count for the prose. We round
+    // because floating-point noise in the score should never produce a
+    // fractional hop count to the user.
+    const hops = Math.max(
+      1,
+      Math.round((DATAFLOW_MAX - signals.dataflowScore) / DATAFLOW_DECAY_PER_HOP) + 1,
+    );
+    return `${c.name} reaches the anchor via ${hops} data-flow hop${hops === 1 ? "" : "s"} (CALLS + arg-binding edges) — the value that surfaces at the failure originates here.`;
+  }
   if (dominantKey === "coChange" && signals.coChangeScore > 0 && newest) {
     return `Co-changed with the anchor in commit ${shortSha(newest.commit)} — the change set that introduced the failure neighborhood.`;
   }

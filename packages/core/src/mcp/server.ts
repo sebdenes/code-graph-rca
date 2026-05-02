@@ -29,6 +29,36 @@ import {
 import { runRca } from "../rca/runner.js";
 import { resolveScope } from "../graph/scope.js";
 import { tryConnectBridge, type BridgeClient } from "./bridge.js";
+import { isDaemonUp, callDaemon } from "../daemon/client.js";
+
+/**
+ * If the daemon is up AND has this repo already indexed, call it via JSON-RPC.
+ * Returns null otherwise — the caller falls through to the in-process path.
+ * Never spawns the daemon and never asks it to index. The user controls daemon
+ * lifecycle via `cgrca daemon start`.
+ */
+async function tryDaemon<R = unknown>(
+  method: string,
+  repoRoot: string,
+  params: Record<string, unknown>,
+): Promise<R | null> {
+  try {
+    if (!(await isDaemonUp())) return null;
+    const status = await callDaemon<{ repos?: string[] }>(
+      "status",
+      {},
+      { timeoutMs: 800 },
+    );
+    if (!status.repos?.includes(repoRoot)) return null;
+    return await callDaemon<R>(method, { repoRoot, ...params }, { timeoutMs: 5000 });
+  } catch {
+    return null;
+  }
+}
+
+function logVia(tool: string, via: "daemon" | "in-process"): void {
+  process.stderr.write(`cgrca mcp: tool=${tool} via=${via}\n`);
+}
 
 interface ServerOptions {
   /** Repo root the agent will be querying against. */
@@ -186,6 +216,19 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ name, language, subsystem }) => {
+      const params: Record<string, unknown> = { name };
+      if (language) params.language = language;
+      if (subsystem) params.subsystem = subsystem;
+      const viaDaemon = await tryDaemon<ReturnType<typeof definitionOf>>(
+        "define", opts.repoRoot, params,
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_definitionOf", "daemon");
+        const first = viaDaemon[0];
+        if (first) await publishFocus(first.name, first.file, first.startLine);
+        return asJson(viaDaemon);
+      }
+      logVia("cgrca_definitionOf", "in-process");
       const { db } = await ensureIndex(opts.repoRoot);
       const queryOpts: { language?: "typescript" | "python"; subsystem?: string } = {};
       if (language) queryOpts.language = language;
@@ -210,6 +253,19 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ name, depth, minConfidence }) => {
+      // Daemon doesn't accept minConfidence yet — only route when caller didn't pass it.
+      if (typeof minConfidence !== "number") {
+        const params: Record<string, unknown> = { name };
+        if (typeof depth === "number") params.depth = depth;
+        const viaDaemon = await tryDaemon<ReturnType<typeof callersOf>>(
+          "callers", opts.repoRoot, params,
+        );
+        if (viaDaemon !== null) {
+          logVia("cgrca_callersOf", "daemon");
+          return asJson(viaDaemon);
+        }
+      }
+      logVia("cgrca_callersOf", "in-process");
       const { db } = await ensureIndex(opts.repoRoot);
       const queryOpts: { depth?: number; minConfidence?: number } = {};
       if (typeof depth === "number") queryOpts.depth = depth;
@@ -234,6 +290,16 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ name, depth }) => {
+      const params: Record<string, unknown> = { name };
+      if (typeof depth === "number") params.depth = depth;
+      const viaDaemon = await tryDaemon<ReturnType<typeof calleesOf>>(
+        "callees", opts.repoRoot, params,
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_calleesOf", "daemon");
+        return asJson(viaDaemon);
+      }
+      logVia("cgrca_calleesOf", "in-process");
       const { db } = await ensureIndex(opts.repoRoot);
       const queryOpts: { depth?: number } = {};
       if (typeof depth === "number") queryOpts.depth = depth;

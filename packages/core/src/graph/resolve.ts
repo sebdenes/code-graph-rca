@@ -123,14 +123,17 @@ function resolveArgBindingSources(db: Db): void {
     }>;
   if (rows.length === 0) return;
 
-  // Caller's own parameter — params table keyed on caller_id. We use this to
-  // *short-circuit* same-file symbol lookups when the identifier is a param,
-  // not to write source_symbol_id (params live in their own table; the FK
-  // targets symbols, not params).
-  const findCallerParam = db.prepare(
-    "SELECT id FROM params WHERE symbol_id = ? AND name = ? LIMIT 1",
+  // Caller's own parameter — promoted to a `kind='param'` row in `symbols`
+  // (parent_id = caller's symbol id) by insertExtracted. The FK on
+  // arg_bindings targets symbols, so source_symbol_id can point at this row
+  // when an identifier arg matches a formal param of the caller. This is the
+  // change that lifts identifier-arg resolution from ~1% (top-level same-file
+  // only) to >40% (the dominant case: user code forwarding a param onward).
+  const findCallerParamSymbol = db.prepare(
+    "SELECT id FROM symbols WHERE parent_id = ? AND kind = 'param' AND name = ? LIMIT 1",
   );
-  // Same-file symbol, top-level only (parent_id IS NULL).
+  // Same-file symbol, top-level only (parent_id IS NULL). Param symbols have
+  // a non-null parent_id so this query naturally skips them.
   const findSameFileSym = db.prepare(
     "SELECT id FROM symbols WHERE file_id = ? AND name = ? AND parent_id IS NULL LIMIT 1",
   );
@@ -150,16 +153,22 @@ function resolveArgBindingSources(db: Db): void {
     "UPDATE arg_bindings SET source_symbol_id = ? WHERE id = ?",
   );
 
-  // Note: a caller's param is not itself a `symbols` row (params live in
-  // their own table). We can't point `source_symbol_id` at a param row —
-  // the FK targets `symbols`. So when we find a caller-param match we
-  // intentionally leave source_symbol_id NULL but mark the binding's
-  // source_kind unchanged; pathBetween still treats arg→caller as a flow
-  // edge via the caller_id implied by the edge. So here we *only* update
-  // when we resolve to a true `symbols` row.
+  // Resolution priority: caller-param first (most identifier args in real
+  // code are bare param forwards: `f(userId)` where userId is a param).
+  // Top-level same-file second. Imports third. Earlier rounds had top-level
+  // first because params couldn't live in `symbols` — that's no longer true.
   const tx = db.transaction(() => {
     for (const r of rows) {
-      // 1) Same-file symbol (top-level).
+      // 1) Caller's own param — promoted to a kind='param' symbol row.
+      const callerParam = findCallerParamSymbol.get(
+        r.caller_id,
+        r.source_text,
+      ) as { id: number } | undefined;
+      if (callerParam) {
+        update.run(callerParam.id, r.id);
+        continue;
+      }
+      // 2) Same-file symbol (top-level).
       const sameFile = findSameFileSym.get(r.file_id, r.source_text) as
         | { id: number }
         | undefined;
@@ -167,13 +176,6 @@ function resolveArgBindingSources(db: Db): void {
         update.run(sameFile.id, r.id);
         continue;
       }
-      // 2) Caller's own param: don't update source_symbol_id (no symbols row),
-      // but skip further lookups so we don't spuriously match a same-named
-      // top-level symbol.
-      const callerParam = findCallerParam.get(r.caller_id, r.source_text) as
-        | { id: number }
-        | undefined;
-      if (callerParam) continue;
       // 3) Imports → resolve to symbol in the imported file. We piggy-back on
       // the import-resolution machinery already used by edges: an edge whose
       // to_name matches our identifier and whose from_symbol_id is in the

@@ -23,6 +23,7 @@ import {
   SOCKET_PATH,
 } from "./state.js";
 import { acquireLock, releaseLock } from "./lockfile.js";
+import { startRepoWatcher, type RepoWatcher } from "./watcher.js";
 
 /**
  * cgrcad: long-lived JSON-RPC server over a unix domain socket.
@@ -47,6 +48,8 @@ export interface DaemonHandle {
   ready: Promise<void>;
   /** Repo registry — exposed for tests. */
   repos: Map<string, Db>;
+  /** Per-repo fs watchers — exposed for tests (flush()). */
+  watchers: Map<string, RepoWatcher>;
 }
 
 const DEFAULT_IDLE_MS = 60 * 60 * 1000;
@@ -67,6 +70,7 @@ export function startDaemon(opts: DaemonOptions = {}): DaemonHandle {
   }
 
   const repos = new Map<string, Db>();
+  const watchers = new Map<string, RepoWatcher>();
   const startedAt = Date.now();
   let lastActivity = Date.now();
   let inflight = 0;
@@ -96,6 +100,13 @@ export function startDaemon(opts: DaemonOptions = {}): DaemonHandle {
     const persist = repoDbPath(key);
     return indexScope({ repoRoot: key, persist }).then((r) => {
       repos.set(key, r.db);
+      // Start the fs watcher on first bootstrap. Subsequent `index` RPCs
+      // reuse the same watcher — no need to tear it down on a full
+      // re-index since the watcher only reads/writes via the live `Db`
+      // handle, which we keep stable below.
+      if (!watchers.has(key)) {
+        watchers.set(key, startRepoWatcher(r.db, key));
+      }
       return r.db;
     });
   }
@@ -118,12 +129,19 @@ export function startDaemon(opts: DaemonOptions = {}): DaemonHandle {
       case "index": {
         const repoRoot = String(params.repoRoot ?? "");
         if (!repoRoot) throw rpcErr(ErrorCodes.InvalidParams, "missing repoRoot");
-        const persist = repoDbPath(resolve(repoRoot));
-        const r = await indexScope({ repoRoot: resolve(repoRoot), persist });
+        const key = resolve(repoRoot);
+        const persist = repoDbPath(key);
+        // Tear down the watcher *before* the rewrite — its in-flight
+        // re-extracts hold the old Db handle. After the rewrite below the
+        // handle is stale.
+        const oldWatcher = watchers.get(key);
+        if (oldWatcher) { try { oldWatcher.close(); } catch { /* ignore */ } watchers.delete(key); }
+        const r = await indexScope({ repoRoot: key, persist });
         // Replace any cached handle (the old one is stale post-rewrite).
-        const old = repos.get(resolve(repoRoot));
+        const old = repos.get(key);
         if (old && old !== r.db) { try { old.close(); } catch { /* ignore */ } }
-        repos.set(resolve(repoRoot), r.db);
+        repos.set(key, r.db);
+        watchers.set(key, startRepoWatcher(r.db, key));
         return {
           fileCount: r.fileCount,
           symbolCount: r.symbolCount,
@@ -238,6 +256,10 @@ export function startDaemon(opts: DaemonOptions = {}): DaemonHandle {
     stopping = true;
     clearInterval(idleTimer);
     await new Promise<void>((r) => server.close(() => r()));
+    for (const w of watchers.values()) {
+      try { w.close(); } catch { /* ignore */ }
+    }
+    watchers.clear();
     for (const db of repos.values()) {
       try { db.close(); } catch { /* ignore */ }
     }
@@ -258,7 +280,7 @@ export function startDaemon(opts: DaemonOptions = {}): DaemonHandle {
     });
   });
 
-  return { stop, ready, repos };
+  return { stop, ready, repos, watchers };
 }
 
 function rpcErr(code: number, message: string): Error & { code: number } {

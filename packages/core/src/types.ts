@@ -7,7 +7,12 @@ export type SymbolKind =
   | "interface"
   | "const"
   | "enum"
-  | "type";
+  | "type"
+  // Synthetic kind: a formal parameter promoted to a first-class symbol so
+  // arg_bindings.source_symbol_id (FK → symbols.id) can target it. Inserted
+  // by insertExtracted's params post-pass; lives at the enclosing function's
+  // start_line/end_line, with parent_id pointing at that function.
+  | "param";
 
 export type EdgeKind = "CALLS" | "IMPORTS" | "EXTENDS" | "IMPLEMENTS";
 
@@ -245,6 +250,10 @@ export interface CausalCandidate {
     coChangeScore: number;
     subsystemScore: number;
     complexityScore: number;
+    /** Shortest pathBetween distance from this candidate to the anchor over
+     *  CALLS + arg-binding flow edges, decayed: 1 hop=1.5, 2=1.1, 3=0.7,
+     *  4=0.3, no path within depth=4 → 0. */
+    dataflowScore: number;
   };
   /** Human-readable rationale, one sentence. */
   rationale: string;
