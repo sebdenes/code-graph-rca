@@ -28,6 +28,8 @@ import {
 } from "../graph/queries.js";
 import { runRca } from "../rca/runner.js";
 import { resolveScope } from "../graph/scope.js";
+import { walk } from "../graph/walker.js";
+import { buildLlmPrompt } from "../rca/llm/index.js";
 import { tryConnectBridge, type BridgeClient } from "./bridge.js";
 import { isDaemonUp, callDaemon } from "../daemon/client.js";
 
@@ -442,6 +444,105 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
     },
   );
 
+  // ---- Tool: rcaWithReasoning (Phase 2 / Phase 3 — LLM-augmented RCA, no API key) ----
+  server.registerTool(
+    "cgrca_rcaWithReasoning",
+    {
+      description:
+        "v0.5 Phase 2/3: free-text RCA with body previews + 1-hop neighbors per candidate, returned as a single structured prompt + JSON output schema. The HOST LLM (you, Claude) reasons over the candidate set inline and emits a verdict — no external API call, no API key needed. Pair with prose / partial-trace failure descriptions where cgrca_rca returns 0 candidates today. Output is the prompt; you respond with the verdict JSON the schema describes.",
+      inputSchema: {
+        failure: z
+          .string()
+          .describe(
+            "Failure description as prose, intent statement, or partial trace. Free-form text — cgrca tokenizes + matches against the indexed graph.",
+          ),
+        topK: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe("Candidates to include in the prompt (default 10)"),
+        maxBodyLines: z
+          .number()
+          .int()
+          .min(5)
+          .max(100)
+          .optional()
+          .describe("Max source lines per candidate body preview (default 30)"),
+        maxFiles: z
+          .number()
+          .int()
+          .min(1)
+          .max(2000)
+          .optional()
+          .describe("Cap on files indexed (default 200; bump for large repos)"),
+      },
+    },
+    async ({ failure, topK, maxBodyLines, maxFiles }) => {
+      const failureScope: import("../rca/runner.js").FailureScope = {
+        kind: "free-text",
+        text: failure,
+      };
+      const budget: { maxFiles?: number } = {};
+      if (typeof maxFiles === "number") budget.maxFiles = maxFiles;
+
+      const result = await runRca({
+        failureScope,
+        repoRoot: opts.repoRoot,
+        budget,
+        topN: topK ?? 10,
+      });
+      logVia("cgrca_rcaWithReasoning", "in-process");
+
+      if (result.causalCandidates.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `cgrca_rcaWithReasoning: free-text RCA returned no candidates. ` +
+                `Notes:\n${result.notes.map((n) => `  - ${n}`).join("\n")}`,
+            },
+          ],
+        };
+      }
+
+      // Re-index broadly so we have a Db handle for body/caller/callee
+      // hydration in buildLlmPrompt. Wasteful — same as the CLI --llm path.
+      const broadFiles = walk(opts.repoRoot)
+        .filter((f) => f.language === "typescript" || f.language === "python")
+        .slice(0, budget.maxFiles ?? 200)
+        .map((f) => f.relPath);
+
+      const indexed = await indexScope({
+        repoRoot: opts.repoRoot,
+        scope: broadFiles,
+        ...(budget.maxFiles !== undefined ? { maxFiles: budget.maxFiles } : {}),
+      });
+      try {
+        const built = buildLlmPrompt({
+          failureDescription: failure,
+          candidates: result.causalCandidates,
+          db: indexed.db,
+          repoRoot: opts.repoRoot,
+          ...(topK !== undefined ? { topK } : {}),
+          ...(maxBodyLines !== undefined ? { maxBodyLines } : {}),
+          // No maxInputTokens cap — host LLM has its own context window;
+          // returning the full hydrated prompt is the right default.
+        });
+        // Compose system + user into a single text block for the host LLM.
+        const text =
+          `# Cgrca LLM-augmented RCA\n\n` +
+          `${built.system}\n\n---\n\n${built.user}\n\n---\n\n` +
+          `Now respond with the verdict JSON described in the schema above.`;
+        return { content: [{ type: "text" as const, text }] };
+      } finally {
+        indexed.db.close();
+      }
+    },
+  );
+
   // ---- Tool: scope (preview which files cgrca would index for a failure, no parse) ----
   server.registerTool(
     "cgrca_scope",
@@ -515,7 +616,7 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
 }
 
 function buildFailureScope(args: {
-  failureKind: "stack-trace" | "failing-test" | "symbol" | "file";
+  failureKind: "stack-trace" | "failing-test" | "symbol" | "file" | "free-text";
   text?: string | undefined;
   path?: string | undefined;
   testName?: string | undefined;
@@ -525,6 +626,8 @@ function buildFailureScope(args: {
   switch (args.failureKind) {
     case "stack-trace":
       return { kind: "stack-trace", text: args.text ?? "" };
+    case "free-text":
+      return { kind: "free-text", text: args.text ?? "" };
     case "failing-test": {
       const v: import("../rca/runner.js").FailureScope = {
         kind: "failing-test",
