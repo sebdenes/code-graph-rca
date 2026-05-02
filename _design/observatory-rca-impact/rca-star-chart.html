@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8">
+  <title>RCA · Star Chart (mockup)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /*
+     * Halo · RCA tab — direction B: Star Chart
+     * Radical single-canvas. Candidates ARE stars around the anchor.
+     * Signal scores are encoded as 7 colored "satellite" glyphs orbiting
+     * each candidate (one per signal type, brighter = stronger).
+     * Right side is a sliding detail card that animates in on hover/select.
+     * Best for "verdict moment" — 3-5 candidates max.
+     */
+    :root {
+      --bg-top: #0c1325;
+      --bg-bottom: #050810;
+      --ink: #f5f5f5;
+      --ink-soft: rgba(245,245,245,0.78);
+      --ink-mute: rgba(245,245,245,0.55);
+      --ink-faint: rgba(245,245,245,0.32);
+      --ink-ghost: rgba(245,245,245,0.18);
+      --halo-red: #ff5c6a;
+      --halo-red-soft: #ffd1d6;
+      --node-fn: #7aa8ff;
+      --node-method: #c084fc;
+      --rule: rgba(245,245,245,0.06);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin:0; padding:0; height:100%; background: linear-gradient(180deg,var(--bg-top) 0%, var(--bg-bottom) 100%); color: var(--ink); font-family: "Newsreader", Georgia, serif; }
+    body { font-size: 14px; line-height: 1.5; overflow: hidden; }
+
+    body::before {
+      content:""; position: fixed; inset:0; pointer-events:none; z-index:0; opacity:.6;
+      background-image:
+        radial-gradient(1px 1px at 8% 21%, rgba(255,255,255,0.4), transparent),
+        radial-gradient(1px 1px at 67% 12%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 12% 78%, rgba(255,255,255,0.35), transparent),
+        radial-gradient(1px 1px at 88% 67%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 39% 89%, rgba(255,255,255,0.3), transparent),
+        radial-gradient(1px 1px at 53% 41%, rgba(255,255,255,0.18), transparent),
+        radial-gradient(1px 1px at 71% 84%, rgba(255,255,255,0.2), transparent),
+        radial-gradient(1px 1px at 9% 36%, rgba(255,255,255,0.22), transparent),
+        radial-gradient(1px 1px at 78% 11%, rgba(255,255,255,0.32), transparent);
+    }
+
+    .stage { position: relative; z-index:1; height: 100vh; display: grid; grid-template-rows: 56px 1fr 36px; }
+
+    /* topbar */
+    .topbar { display:flex; align-items: center; padding: 0 28px; gap: 28px; border-bottom: 1px solid var(--rule); }
+    .brand { font-style: italic; font-weight:400; font-size: 22px; letter-spacing: -0.02em; }
+    .brand .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--halo-red); box-shadow: 0 0 0 3px rgba(255,92,106,.18), 0 0 14px rgba(255,92,106,.55); transform: translateY(-8px); margin-left: 4px; }
+    .tabs { display:flex; gap: 22px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .15em; text-transform: uppercase; color: var(--ink-mute); }
+    .tabs .active { color: var(--ink); }
+    .tabs .active::after { content:""; display:block; height:1px; background: var(--halo-red); margin-top: 4px; }
+    .session { margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .12em; color: var(--ink-faint); text-transform: uppercase; }
+    .session strong { color: var(--ink-soft); font-weight: 500; }
+
+    /* ---------- canvas ---------- */
+    .canvas { position: relative; overflow: hidden; }
+    .chart-svg { width: 100%; height: 100%; display: block; }
+
+    /* hypothesis: top-left, italic serif prose, max 380px */
+    .hypothesis { position: absolute; left: 28px; top: 24px; max-width: 380px; }
+    .hypothesis .lit { font-style: italic; font-size: 15px; line-height: 1.55; color: var(--ink-soft); font-weight: 300; }
+    .hypothesis .lit .em { color: var(--halo-red); font-weight: 500; }
+    .hypothesis .lit .mono { font-family: "JetBrains Mono", monospace; font-style: normal; font-size: 12px; color: var(--ink-mute); }
+    .hypothesis .meta { margin-top: 14px; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .14em; color: var(--ink-faint); text-transform: uppercase; }
+
+    /* signal legend: top-right pinned, vertical color column */
+    .signal-key { position: absolute; right: 28px; top: 24px; font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); letter-spacing: .12em; text-transform: uppercase; }
+    .signal-key .row { display: flex; align-items: center; gap: 8px; padding: 3px 0; justify-content: flex-end; }
+    .signal-key .row .name { color: var(--ink-mute); }
+    .signal-key .row .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+    .signal-key .head { color: var(--ink-faint); margin-bottom: 6px; }
+
+    /* detail card: right-bottom slide-in (shown as if a candidate is selected) */
+    .detail-card {
+      position: absolute; right: 28px; bottom: 64px; width: 360px;
+      background: rgba(12,19,37,0.78); border: 1px solid rgba(255,92,106,0.3);
+      backdrop-filter: blur(8px); padding: 18px 20px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.5);
+    }
+    .detail-card::before {
+      content:""; position: absolute; left:-1px; top:0; bottom:0; width:2px;
+      background: var(--halo-red); box-shadow: 0 0 14px rgba(255,92,106,0.6);
+    }
+    .detail-card .label { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: .18em; color: var(--ink-faint); text-transform: uppercase; }
+    .detail-card .name { font-family: "JetBrains Mono", monospace; font-size: 16px; color: var(--halo-red); margin-top: 4px; font-weight: 500; }
+    .detail-card .file { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--ink-mute); margin-top: 4px; }
+    .detail-card .score-row { display: flex; align-items: baseline; gap: 14px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); }
+    .detail-card .score-num { font-family: "Newsreader", serif; font-style: italic; font-size: 44px; line-height: 1; color: var(--halo-red); letter-spacing: -0.03em; }
+    .detail-card .score-label { font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: .15em; color: var(--ink-faint); text-transform: uppercase; }
+    .detail-card .rationale { margin-top: 14px; font-style: italic; font-size: 14px; line-height: 1.55; color: var(--ink-soft); font-weight: 300; }
+    .detail-card .rationale .num { font-family: "JetBrains Mono", monospace; font-style: normal; font-size: 12px; color: var(--halo-red-soft); }
+    .detail-card .commits { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); }
+    .detail-card .commit { display: grid; grid-template-columns: 56px 1fr 28px; gap: 8px; align-items: baseline; padding: 4px 0; }
+    .detail-card .commit .sha { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--node-fn); }
+    .detail-card .commit .subj { font-style: italic; font-size: 12px; color: var(--ink-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-card .commit .age { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); text-align: right; }
+    .detail-card .signals-mini { margin-top: 10px; display:flex; gap:14px; }
+    .detail-card .sig { display:flex; flex-direction:column; align-items:center; gap:2px; }
+    .detail-card .sig .v { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink); }
+    .detail-card .sig .v.dim { color: var(--ink-faint); }
+    .detail-card .sig .l { font-family: "JetBrains Mono", monospace; font-size: 8px; letter-spacing: .12em; color: var(--ink-faint); text-transform: uppercase; }
+
+    /* bottom legend */
+    .bottom-bar { display: flex; align-items: center; padding: 0 28px; border-top: 1px solid var(--rule); font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .12em; color: var(--ink-faint); text-transform: uppercase; }
+    .bottom-bar .seg { margin-right: 24px; }
+    .bottom-bar .swatch { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  </style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="topbar">
+    <div class="brand">Halo<span class="dot"></span></div>
+    <div class="tabs">
+      <span>Graph</span>
+      <span class="active">RCA</span>
+      <span>Impact</span>
+    </div>
+    <div class="session">
+      Session <strong>self-rca</strong> · 21 files · 312 symbols · 1458 edges · v0.4.1
+    </div>
+  </div>
+
+  <div class="canvas">
+    <!-- hypothesis -->
+    <div class="hypothesis">
+      <div class="lit">
+        The most likely cause sits in <span class="em">runRca</span> —
+        anchor of the failure neighborhood, modified
+        <span class="mono">0 days ago</span> in commit
+        <span class="mono">7d80839</span>, with <span class="mono">2 directly co-changed callees</span>.
+      </div>
+      <div class="meta">5 candidates · top-1 · score 2.5 · subsystem rca</div>
+    </div>
+
+    <!-- signal legend -->
+    <div class="signal-key">
+      <div class="head">7-signal satellites</div>
+      <div class="row"><span class="name">recency</span><span class="swatch" style="background:#ff8fc4"></span></div>
+      <div class="row"><span class="name">proximity</span><span class="swatch" style="background:#7aa8ff"></span></div>
+      <div class="row"><span class="name">ambiguity</span><span class="swatch" style="background:#c084fc"></span></div>
+      <div class="row"><span class="name">co-change</span><span class="swatch" style="background:#ffb547"></span></div>
+      <div class="row"><span class="name">subsystem</span><span class="swatch" style="background:#5dd699"></span></div>
+      <div class="row"><span class="name">complexity</span><span class="swatch" style="background:#5cd5ff"></span></div>
+      <div class="row"><span class="name">data-flow</span><span class="swatch" style="background:#5a5e74"></span></div>
+    </div>
+
+    <!-- the chart itself -->
+    <svg class="chart-svg" viewBox="0 0 1200 720" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <radialGradient id="anchor-flare-x">
+          <stop offset="0%" stop-color="rgba(255,92,106,0.85)"/>
+          <stop offset="35%" stop-color="rgba(255,92,106,0.32)"/>
+          <stop offset="70%" stop-color="rgba(255,92,106,0.08)"/>
+          <stop offset="100%" stop-color="rgba(255,92,106,0)"/>
+        </radialGradient>
+        <radialGradient id="cand-glow">
+          <stop offset="0%" stop-color="rgba(122,168,255,0.6)"/>
+          <stop offset="60%" stop-color="rgba(122,168,255,0.12)"/>
+          <stop offset="100%" stop-color="rgba(122,168,255,0)"/>
+        </radialGradient>
+        <radialGradient id="cand-glow-dim">
+          <stop offset="0%" stop-color="rgba(122,168,255,0.3)"/>
+          <stop offset="60%" stop-color="rgba(122,168,255,0.06)"/>
+          <stop offset="100%" stop-color="rgba(122,168,255,0)"/>
+        </radialGradient>
+      </defs>
+
+      <!-- ambient nebulas -->
+      <ellipse cx="600" cy="360" rx="380" ry="280" fill="rgba(122,168,255,0.04)"/>
+      <ellipse cx="600" cy="360" rx="220" ry="160" fill="rgba(255,92,106,0.025)"/>
+
+      <!-- caller arrow lines (faint), all radiating from anchor -->
+      <g stroke="rgba(122,168,255,0.32)" stroke-width="1" fill="none">
+        <line x1="600" y1="360" x2="320" y2="220"/>             <!-- ↗ cmdRca caller -->
+        <line x1="600" y1="360" x2="900" y2="240"/>             <!-- ↗ buildCausalChain callee -->
+        <line x1="600" y1="360" x2="940" y2="480"/>             <!-- → formatRcaPrompt callee -->
+        <line x1="600" y1="360" x2="320" y2="540"/>             <!-- ↙ indexScope callee (d=2) -->
+      </g>
+      <!-- lit anchor edges -->
+      <g stroke="#ff5c6a" stroke-opacity="0.42" stroke-width="1.8" fill="none">
+        <line x1="600" y1="360" x2="320" y2="220"/>
+        <line x1="600" y1="360" x2="900" y2="240"/>
+      </g>
+
+      <!-- d=2 edge from indexScope → buildCausalChain (chain via runRca) -->
+      <line x1="320" y1="540" x2="600" y2="360" stroke="rgba(122,168,255,0.18)" stroke-dasharray="3 3"/>
+
+      <!-- ========== ANCHOR (runRca) ========== -->
+      <!-- lens flare -->
+      <circle cx="600" cy="360" r="100" fill="url(#anchor-flare-x)"/>
+      <g stroke="#ff5c6a" stroke-opacity="0.78" stroke-width="0.9" stroke-linecap="round">
+        <line x1="600" y1="295" x2="600" y2="425"/>
+        <line x1="535" y1="360" x2="665" y2="360"/>
+      </g>
+      <g stroke="#ff5c6a" stroke-opacity="0.4" stroke-width="0.7" stroke-linecap="round">
+        <line x1="555" y1="315" x2="645" y2="405"/>
+        <line x1="645" y1="315" x2="555" y2="405"/>
+      </g>
+      <g fill="none" stroke="#ff5c6a">
+        <circle cx="600" cy="360" r="14" stroke-opacity="0.85" stroke-width="1.5"/>
+        <circle cx="600" cy="360" r="22" stroke-opacity="0.4"/>
+        <circle cx="600" cy="360" r="34" stroke-opacity="0.18"/>
+      </g>
+      <circle cx="600" cy="360" r="8" fill="#ff5c6a"/>
+      <text x="618" y="356" font-family="JetBrains Mono" font-size="13" fill="#ff5c6a" font-weight="500">runRca</text>
+      <text x="618" y="372" font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.55)">runner.ts:216</text>
+      <text x="618" y="390" font-family="Newsreader" font-style="italic" font-size="22" fill="rgba(255,209,214,0.95)" letter-spacing="-0.02em">2.5</text>
+
+      <!-- 7-signal satellites for anchor: small colored dots in tight ring -->
+      <!-- recency 3.0 (full bright), prox 2.5, ambig 1.5, cochange 1.0, subsys 0.5, complex 0.6, dataflow 0 -->
+      <g>
+        <circle cx="600" cy="320" r="2.6" fill="#ff8fc4"/>                        <!-- recency: top -->
+        <circle cx="635" cy="335" r="2.4" fill="#7aa8ff"/>                        <!-- prox -->
+        <circle cx="640" cy="375" r="1.8" fill="#c084fc"/>                        <!-- ambig -->
+        <circle cx="618" cy="395" r="1.4" fill="#ffb547"/>                        <!-- cochange -->
+        <circle cx="582" cy="395" r="1.2" fill="#5dd699"/>                        <!-- subsys -->
+        <circle cx="560" cy="375" r="1.5" fill="#5cd5ff"/>                        <!-- complex -->
+        <circle cx="565" cy="335" r="0.9" fill="#5a5e74"/>                        <!-- dataflow (clipped, dim) -->
+      </g>
+
+      <!-- ========== candidate 2: cmdRca (caller) ========== -->
+      <circle cx="320" cy="220" r="44" fill="url(#cand-glow)"/>
+      <g fill="none" stroke="rgba(122,168,255,0.42)">
+        <circle cx="320" cy="220" r="9" stroke-width="1"/>
+        <circle cx="320" cy="220" r="14" stroke-opacity="0.32"/>
+      </g>
+      <circle cx="320" cy="220" r="5" fill="#7aa8ff"/>
+      <text x="335" y="217" font-family="JetBrains Mono" font-size="12" fill="rgba(245,245,245,0.95)" font-weight="500">cmdRca</text>
+      <text x="335" y="232" font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.55)">cli.ts:288</text>
+      <text x="335" y="251" font-family="Newsreader" font-style="italic" font-size="18" fill="rgba(245,245,245,0.78)">1.8</text>
+      <!-- satellites: 7 around, color-mapped to signal value -->
+      <g>
+        <circle cx="320" cy="200" r="2.4" fill="#ff8fc4"/>          <!-- recency 3 -->
+        <circle cx="338" cy="210" r="1.6" fill="#7aa8ff"/>          <!-- prox 1 -->
+        <circle cx="340" cy="230" r="1.2" fill="#c084fc"/>
+        <circle cx="328" cy="240" r="1.6" fill="#ffb547"/>
+        <circle cx="312" cy="240" r="1.2" fill="#5dd699"/>
+        <circle cx="302" cy="230" r="1.4" fill="#5cd5ff"/>
+        <circle cx="304" cy="212" r="0.7" fill="#5a5e74"/>
+      </g>
+      <text x="335" y="195" font-family="JetBrains Mono" font-size="9" fill="rgba(245,245,245,0.32)" letter-spacing="0.14em">CALLER · D=1</text>
+
+      <!-- ========== candidate 3: buildCausalChain (callee) ========== -->
+      <circle cx="900" cy="240" r="48" fill="url(#cand-glow)"/>
+      <g fill="none" stroke="rgba(122,168,255,0.42)">
+        <circle cx="900" cy="240" r="11" stroke-width="1"/>
+        <circle cx="900" cy="240" r="16" stroke-opacity="0.32"/>
+      </g>
+      <circle cx="900" cy="240" r="6" fill="#7aa8ff"/>
+      <text x="868" y="218" font-family="JetBrains Mono" font-size="12" fill="rgba(245,245,245,0.95)" font-weight="500" text-anchor="end">buildCausalChain</text>
+      <text x="868" y="232" font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.55)" text-anchor="end">causal.ts:189</text>
+      <text x="868" y="252" font-family="Newsreader" font-style="italic" font-size="18" fill="rgba(245,245,245,0.78)" text-anchor="end">1.7</text>
+      <!-- satellites -->
+      <g>
+        <circle cx="900" cy="220" r="2.4" fill="#ff8fc4"/>
+        <circle cx="918" cy="232" r="1.6" fill="#7aa8ff"/>
+        <circle cx="922" cy="252" r="2.0" fill="#c084fc"/>          <!-- ambig high -->
+        <circle cx="908" cy="262" r="0.7" fill="#ffb547"/>           <!-- cochange near zero -->
+        <circle cx="892" cy="262" r="1.2" fill="#5dd699"/>
+        <circle cx="880" cy="252" r="2.0" fill="#5cd5ff"/>           <!-- complex high -->
+        <circle cx="884" cy="232" r="0.7" fill="#5a5e74"/>
+      </g>
+      <text x="868" y="200" font-family="JetBrains Mono" font-size="9" fill="rgba(245,245,245,0.32)" letter-spacing="0.14em" text-anchor="end">CALLEE · D=1</text>
+
+      <!-- ========== candidate 4: formatRcaPrompt (callee) ========== -->
+      <circle cx="940" cy="480" r="38" fill="url(#cand-glow-dim)"/>
+      <g fill="none" stroke="rgba(122,168,255,0.32)">
+        <circle cx="940" cy="480" r="9" stroke-width="0.8"/>
+      </g>
+      <circle cx="940" cy="480" r="4.5" fill="#7aa8ff" opacity="0.85"/>
+      <text x="958" y="476" font-family="JetBrains Mono" font-size="12" fill="rgba(245,245,245,0.85)" font-weight="500">formatRcaPrompt</text>
+      <text x="958" y="491" font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.45)">prompt.ts:42</text>
+      <text x="958" y="510" font-family="Newsreader" font-style="italic" font-size="16" fill="rgba(245,245,245,0.55)">1.4</text>
+      <g>
+        <circle cx="940" cy="464" r="1.8" fill="#ff8fc4"/>
+        <circle cx="954" cy="473" r="1.6" fill="#7aa8ff"/>
+        <circle cx="956" cy="490" r="1.2" fill="#c084fc"/>
+        <circle cx="945" cy="498" r="1.0" fill="#ffb547"/>
+        <circle cx="932" cy="498" r="1.2" fill="#5dd699"/>
+        <circle cx="922" cy="490" r="1.0" fill="#5cd5ff"/>
+        <circle cx="924" cy="473" r="0.6" fill="#5a5e74"/>
+      </g>
+
+      <!-- ========== candidate 5: indexScope (d=2 callee, dimmer) ========== -->
+      <circle cx="320" cy="540" r="30" fill="url(#cand-glow-dim)"/>
+      <g fill="none" stroke="rgba(122,168,255,0.32)">
+        <circle cx="320" cy="540" r="7" stroke-width="0.8"/>
+      </g>
+      <circle cx="320" cy="540" r="3.8" fill="#7aa8ff" opacity="0.7"/>
+      <text x="305" y="558" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.65)" font-weight="500" text-anchor="end">indexScope</text>
+      <text x="305" y="571" font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.4)" text-anchor="end">orchestrator.ts:91</text>
+      <text x="305" y="588" font-family="Newsreader" font-style="italic" font-size="14" fill="rgba(245,245,245,0.4)" text-anchor="end">1.2</text>
+      <g>
+        <circle cx="320" cy="528" r="1.0" fill="#ff8fc4"/>
+        <circle cx="332" cy="535" r="0.8" fill="#7aa8ff"/>
+        <circle cx="333" cy="548" r="1.7" fill="#c084fc"/>
+        <circle cx="324" cy="555" r="0.6" fill="#ffb547"/>
+        <circle cx="312" cy="555" r="0.6" fill="#5dd699"/>
+        <circle cx="305" cy="548" r="1.6" fill="#5cd5ff"/>
+        <circle cx="307" cy="535" r="0.6" fill="#5a5e74"/>
+      </g>
+      <text x="305" y="514" font-family="JetBrains Mono" font-size="9" fill="rgba(245,245,245,0.32)" letter-spacing="0.14em" text-anchor="end">CALLEE · D=2</text>
+
+      <!-- file-cluster italic labels (ambient nebulae names) -->
+      <g font-family="Newsreader" font-style="italic" font-size="13" fill="rgba(245,245,245,0.32)">
+        <text x="600" y="146" text-anchor="middle">runner.ts</text>
+        <text x="320" y="160" text-anchor="middle">cli.ts</text>
+        <text x="900" y="180" text-anchor="middle">causal.ts</text>
+        <text x="1000" y="430" text-anchor="middle">prompt.ts</text>
+        <text x="320" y="615" text-anchor="middle">orchestrator.ts</text>
+      </g>
+    </svg>
+
+    <!-- detail card (showing as if anchor "runRca" is selected) -->
+    <div class="detail-card">
+      <div class="label">Selected · evidence</div>
+      <div class="name">runRca</div>
+      <div class="file">packages/core/src/rca/runner.ts:216-368</div>
+
+      <div class="score-row">
+        <div class="score-num">2.5</div>
+        <div>
+          <div class="score-label">causal score</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ink-faint);margin-top:4px;letter-spacing:.06em">v0.4.1 calibrated weights</div>
+        </div>
+      </div>
+
+      <div class="signals-mini">
+        <div class="sig"><div class="v">3.0</div><div class="l">REC</div></div>
+        <div class="sig"><div class="v">2.5</div><div class="l">PROX</div></div>
+        <div class="sig"><div class="v">1.5</div><div class="l">AMB</div></div>
+        <div class="sig"><div class="v">1.0</div><div class="l">CO-Δ</div></div>
+        <div class="sig"><div class="v">0.5</div><div class="l">SUB</div></div>
+        <div class="sig"><div class="v">0.6</div><div class="l">CMPL</div></div>
+        <div class="sig"><div class="v dim">0</div><div class="l">DATA</div></div>
+      </div>
+
+      <div class="rationale">
+        Anchor of the failure neighborhood. <span class="num">16</span> unresolved
+        outgoing calls — likely site for dynamic-dispatch surprises.
+      </div>
+
+      <div class="commits">
+        <div class="commit">
+          <span class="sha">7d80839</span>
+          <span class="subj">v0.4.0 — 3 packages bumped + published</span>
+          <span class="age">0d</span>
+        </div>
+        <div class="commit">
+          <span class="sha">7688da4</span>
+          <span class="subj">docs: v0.4.1 — README rewrite</span>
+          <span class="age">0d</span>
+        </div>
+        <div class="commit">
+          <span class="sha">6e6b2c1</span>
+          <span class="subj">week 7 — receiver-types, prompt split</span>
+          <span class="age">1d</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bottom-bar">
+    <span class="seg">5 candidates · sorted by score</span>
+    <span class="seg">satellite size = signal strength</span>
+    <span class="seg">brighter halo = higher score</span>
+    <span style="margin-left:auto;color:rgba(245,245,245,0.18)">click a star to inspect · drag to pan</span>
+  </div>
+</div>
+</body>
+</html>

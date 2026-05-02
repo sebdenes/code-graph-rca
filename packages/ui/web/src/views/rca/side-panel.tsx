@@ -1,11 +1,22 @@
-import { useQueries } from "@tanstack/react-query";
-import type {
-  CallerTree,
-  CalleeTree,
-  CausalCandidate,
-  Definition,
-  RecentChange,
-} from "code-graph-rca";
+/**
+ * Right column of the RCA Evidence Board: code excerpt + commits-in-scope
+ * for the currently-selected candidate.
+ *
+ * - Pulls the file source via the existing `/api/session/:id/source/*` route
+ *   and slices a window around `candidate.line`. Lines inside the candidate's
+ *   span (`startLine .. endLine`, inferred from the symbol's recorded line
+ *   plus a generous tail) get the halo-red "lit" treatment.
+ * - Syntax highlighting is a small regex pass — keywords, strings, numbers,
+ *   comments, and call-site identifiers. We deliberately avoid pulling in a
+ *   heavyweight tokenizer for what's effectively a 30-line excerpt.
+ * - When no source is available (no repoRoot, fetch failed, file missing),
+ *   we render a quiet placeholder citing the file:line so the user can grep
+ *   themselves. We never invent fake source.
+ */
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { CausalCandidate } from "code-graph-rca";
+import type { SourceResponse } from "@shared/api";
 import { api } from "../../api/client.ts";
 
 interface Props {
@@ -14,230 +25,239 @@ interface Props {
   candidate: CausalCandidate | null;
 }
 
+const WINDOW_BEFORE = 4;
+const WINDOW_AFTER = 30;
+
 export function SidePanel({ sessionId, selectedSymbol, candidate }: Props) {
   if (!selectedSymbol) {
     return (
-      <div className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground">
-        Select a node to see details.
+      <div className="rca-right">
+        <div className="rca-side-empty">
+          Select a candidate from the dossiers to inspect its code excerpt and commits.
+        </div>
       </div>
     );
   }
 
-  const name = selectedSymbol.name;
-  const enabled = Boolean(name);
-  const queries = useQueries({
-    queries: [
-      {
-        queryKey: ["definitionOf", sessionId, name],
-        queryFn: () => api.query(sessionId, { name: "definitionOf", args: { name } }),
-        enabled,
-      },
-      {
-        queryKey: ["callersOf", sessionId, name, 1],
-        queryFn: () => api.query(sessionId, { name: "callersOf", args: { name, depth: 1 } }),
-        enabled,
-      },
-      {
-        queryKey: ["calleesOf", sessionId, name, 1],
-        queryFn: () => api.query(sessionId, { name: "calleesOf", args: { name, depth: 1 } }),
-        enabled,
-      },
-    ],
+  const file = selectedSymbol.file ?? candidate?.file ?? null;
+  const line = selectedSymbol.line ?? candidate?.line ?? null;
+  const isAnchor = candidate?.role === "anchor";
+
+  const sourceQ = useQuery<SourceResponse, Error>({
+    queryKey: ["source", sessionId, file],
+    queryFn: () => {
+      if (!file) throw new Error("no file");
+      return api.source(sessionId, file);
+    },
+    enabled: Boolean(file),
+    retry: false,
   });
 
-  const defQ = queries[0];
-  const callersQ = queries[1];
-  const calleesQ = queries[2];
-
-  const defResp = defQ.data;
-  const def: Definition | null =
-    defResp && defResp.name === "definitionOf"
-      ? (defResp.result.find((d) => matchesFile(d.file, selectedSymbol.file)) ?? defResp.result[0] ?? null)
-      : null;
-
-  const callersResp = callersQ.data;
-  const callers: CallerTree | null =
-    callersResp && callersResp.name === "callersOf" ? callersResp.result : null;
-
-  const calleesResp = calleesQ.data;
-  const callees: CalleeTree | null =
-    calleesResp && calleesResp.name === "calleesOf" ? calleesResp.result : null;
-
-  const fileLine = def
-    ? `${def.file}:${def.startLine}`
-    : selectedSymbol.file
-    ? `${selectedSymbol.file}${selectedSymbol.line ? ":" + selectedSymbol.line : ""}`
-    : null;
-
-  const resolvedCallees = (callees?.callees ?? []).filter((c) => c.resolved);
-  const unresolvedCallees = (callees?.callees ?? []).filter((c) => !c.resolved);
+  const excerpt = useMemo(() => {
+    if (!sourceQ.data || line == null) return null;
+    const lines = sourceQ.data.content.split("\n");
+    // Approximate end line: candidate.loc when available, else WINDOW_AFTER.
+    const span = candidate?.loc ?? WINDOW_AFTER;
+    const start = Math.max(1, line - WINDOW_BEFORE);
+    // Cap excerpt at ~40 lines so the right column never floods.
+    const litStart = line;
+    const litEnd = Math.min(lines.length, line + Math.min(span, WINDOW_AFTER));
+    const showEnd = Math.min(lines.length, litEnd);
+    const slice = lines.slice(start - 1, showEnd).map((text, i) => ({
+      lineNo: start + i,
+      text,
+      lit: start + i >= litStart && start + i <= litStart + 3,
+    }));
+    return { slice, litStart, litEnd };
+  }, [sourceQ.data, line, candidate?.loc]);
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
-      <div className="border-b border-border px-3 py-3">
-        <div className="flex items-baseline gap-2">
-          <h2 className="font-mono text-base font-semibold break-all">{name}</h2>
-          {def?.kind && (
-            <span className="rounded bg-muted px-1.5 py-0.5 text-xs uppercase text-muted-foreground">
-              {def.kind}
-            </span>
+    <div className="rca-right">
+      <div className="rca-right-head">
+        <div className="label">Inspect · evidence</div>
+        <div className={`name${isAnchor ? " hot" : ""}`}>{selectedSymbol.name}</div>
+        <div className="file-line">
+          {file ? (
+            <>
+              {file}
+              {excerpt
+                ? `:${excerpt.litStart}-${excerpt.litEnd}`
+                : line != null
+                ? `:${line}`
+                : ""}
+            </>
+          ) : (
+            "(no file recorded for this symbol)"
           )}
         </div>
-        {fileLine && (
-          <button
-            onClick={() => {
-              // The future code-pane agent will listen for this event.
-              window.dispatchEvent(new CustomEvent("cgrca:open-source", { detail: { file: def?.file ?? selectedSymbol.file, line: def?.startLine ?? selectedSymbol.line } }));
-              // eslint-disable-next-line no-console
-              console.log("[rca] open-source", fileLine);
-            }}
-            className="mt-1 block truncate text-xs font-mono text-muted-foreground hover:text-foreground hover:underline"
-          >
-            {fileLine}
-          </button>
-        )}
-        {def?.signature && (
-          <pre className="mt-2 max-h-32 overflow-auto rounded bg-muted px-2 py-1 text-xs font-mono whitespace-pre-wrap break-all">
-            {def.signature}
+      </div>
+
+      <div className="rca-code-pane">
+        {!file ? (
+          <div className="rca-code-empty">
+            This symbol has no file recorded in the indexed graph — it may be
+            an out-of-scope dependency or a phantom name surfaced by the scorer.
+          </div>
+        ) : sourceQ.isPending ? (
+          <div className="rca-code-empty">Loading source…</div>
+        ) : sourceQ.error ? (
+          <div className="rca-code-empty">
+            Could not read source from the session repo root.
+            <span className="mono">
+              {file}
+              {line != null ? `:${line}` : ""} · {String(sourceQ.error.message)}
+            </span>
+          </div>
+        ) : !excerpt ? (
+          <div className="rca-code-empty">
+            No anchor line for this symbol — open the file directly to inspect it.
+            <span className="mono">{file}</span>
+          </div>
+        ) : (
+          <pre className="rca-code">
+            {excerpt.slice.map(({ lineNo, text, lit }) => (
+              <span key={lineNo} className={`row${lit ? " lit" : ""}`}>
+                <span className="ln">{lineNo}</span>
+                {highlight(text, sourceQ.data.language)}
+                {"\n"}
+              </span>
+            ))}
           </pre>
         )}
       </div>
 
-      {candidate && (
-        <Section title="Score Breakdown">
-          <div className="px-3 pb-3">
-            <table className="w-full text-xs">
-              <tbody>
-                <SignalRow label="Recency" value={candidate.signals.recencyScore} />
-                <SignalRow label="Proximity" value={candidate.signals.proximityScore} />
-                <SignalRow label="Ambiguity" value={candidate.signals.ambiguityScore} />
-                <SignalRow label="Co-Change" value={candidate.signals.coChangeScore} />
-                <SignalRow label="Subsystem" value={candidate.signals.subsystemScore} />
-                <tr className="border-t border-border">
-                  <td className="py-1 font-semibold">Total</td>
-                  <td className="py-1 text-right font-mono font-semibold">
-                    {candidate.score.toFixed(2)}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </Section>
-      )}
-
       {candidate && candidate.recentChanges.length > 0 && (
-        <Section title="Recent Changes">
-          <ul className="px-3 pb-3 text-xs">
-            {candidate.recentChanges.map((rc) => (
-              <ChangeRow key={rc.commit} change={rc} />
-            ))}
-          </ul>
-        </Section>
-      )}
-
-      <Section title={`Callers (${callers?.callers.length ?? 0})`}>
-        <ListBody loading={callersQ.isPending}>
-          {callers && callers.callers.length === 0 && <Empty>No callers in scope.</Empty>}
-          {callers?.callers.map((c, i) => (
-            <li key={`${c.file}:${c.name}:${i}`} className="px-3 py-1 text-xs">
-              <span className="font-mono">{c.name}</span>{" "}
-              <span className="text-muted-foreground">
-                ({c.file}:{c.line})
-              </span>
-            </li>
-          ))}
-        </ListBody>
-      </Section>
-
-      <Section title={`Callees (${resolvedCallees.length})`}>
-        <ListBody loading={calleesQ.isPending}>
-          {resolvedCallees.length === 0 && <Empty>No callees in scope.</Empty>}
-          {resolvedCallees.map((c, i) => (
-            <li key={`${c.file ?? "?"}:${c.name}:${i}`} className="px-3 py-1 text-xs">
-              <span className="font-mono">{c.name}</span>{" "}
-              <span className="text-muted-foreground">
-                ({c.file ?? "?"}:{c.line ?? "?"})
-              </span>
-            </li>
-          ))}
-        </ListBody>
-        {unresolvedCallees.length > 0 && (
-          <>
-            <div className="border-t border-border px-3 py-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-              Unresolved calls
+        <div className="rca-commits">
+          <div className="label">
+            Recent commits in scope · {candidate.recentChanges.length}
+          </div>
+          {candidate.recentChanges.slice(0, 6).map((rc) => (
+            <div key={rc.commit} className="rca-commit">
+              <span className="sha">{rc.commit.slice(0, 7)}</span>
+              <span className="subj">{rc.subject}</span>
+              <span className="age">{rc.daysAgo}d</span>
             </div>
-            <ul>
-              {unresolvedCallees.map((c, i) => (
-                <li key={`u:${c.name}:${i}`} className="px-3 py-1 text-xs text-muted-foreground">
-                  <span className="font-mono italic">{c.name}</span>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-      </Section>
-
-      {(defQ.error || callersQ.error || calleesQ.error) && (
-        <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-700">
-          {String(defQ.error ?? callersQ.error ?? calleesQ.error)}
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="border-b border-border">
-      <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {title}
-      </div>
-      {children}
-    </div>
-  );
+/* ------------------------------------------------------------------ */
+/* Lightweight regex highlighter.                                      */
+/*                                                                     */
+/* This is intentionally simple — it covers TS/JS/Python well enough   */
+/* for a 30-line excerpt. We do NOT pull in shiki / prismjs / etc      */
+/* because the excerpt is small, the highlighting is cosmetic, and     */
+/* avoiding the dep keeps the bundle lean. If we ever need accurate    */
+/* tokenization (e.g. for a full Monaco-style file pane) shiki is      */
+/* already in package.json.                                            */
+/* ------------------------------------------------------------------ */
+
+const TS_KEYWORDS = new Set([
+  "abstract", "any", "as", "async", "await", "boolean", "break", "case",
+  "catch", "class", "const", "continue", "default", "delete", "do", "else",
+  "enum", "export", "extends", "false", "finally", "for", "from", "function",
+  "if", "implements", "import", "in", "instanceof", "interface", "let", "new",
+  "null", "number", "of", "private", "protected", "public", "readonly", "return",
+  "static", "string", "super", "switch", "this", "throw", "true", "try", "type",
+  "typeof", "undefined", "var", "void", "while", "yield",
+]);
+
+const PY_KEYWORDS = new Set([
+  "and", "as", "assert", "async", "await", "break", "class", "continue",
+  "def", "del", "elif", "else", "except", "False", "finally", "for", "from",
+  "global", "if", "import", "in", "is", "lambda", "None", "nonlocal", "not",
+  "or", "pass", "raise", "return", "True", "try", "while", "with", "yield",
+]);
+
+interface Tok {
+  cls: string | null;
+  text: string;
+  key: number;
 }
 
-function SignalRow({ label, value }: { label: string; value: number }) {
-  return (
-    <tr>
-      <td className="py-0.5 text-muted-foreground">{label}</td>
-      <td className="py-0.5 text-right font-mono">{value.toFixed(2)}</td>
-    </tr>
-  );
-}
+/**
+ * Token a single source line. Order of regexes matters: comments and
+ * strings consume first so identifiers inside them aren't re-tokenized.
+ */
+function highlight(line: string, lang: SourceResponse["language"]): JSX.Element[] {
+  const kws = lang === "python" ? PY_KEYWORDS : TS_KEYWORDS;
+  const tokens: Tok[] = [];
+  let i = 0;
+  let key = 0;
+  const push = (cls: string | null, text: string) => {
+    if (text.length === 0) return;
+    tokens.push({ cls, text, key: key++ });
+  };
 
-function ChangeRow({ change }: { change: RecentChange }) {
-  return (
-    <li>
-      <button
-        onClick={() => {
-          // Stub for future diff modal.
-          // eslint-disable-next-line no-console
-          console.log("[rca] open-diff", change.commit);
-        }}
-        className="flex w-full items-baseline gap-2 py-0.5 text-left hover:underline"
-      >
-        <span className="font-mono">{change.commit.slice(0, 7)}</span>
-        <span className="flex-1 truncate">{change.subject}</span>
-        <span className="text-muted-foreground">{change.daysAgo}d</span>
-      </button>
-    </li>
-  );
-}
-
-function ListBody({ loading, children }: { loading: boolean; children: React.ReactNode }) {
-  if (loading) {
-    return <div className="px-3 py-2 text-xs text-muted-foreground animate-pulse">Loading…</div>;
+  while (i < line.length) {
+    const rest = line.slice(i);
+    // Single-line comment: // for TS, # for python.
+    if (
+      (lang === "python" && rest.startsWith("#")) ||
+      (lang !== "python" && rest.startsWith("//"))
+    ) {
+      push("com", rest);
+      i = line.length;
+      break;
+    }
+    // String literal — handles ", ', and ` until matching quote on the same line.
+    if (rest[0] === '"' || rest[0] === "'" || rest[0] === "`") {
+      const quote = rest[0];
+      let j = 1;
+      while (j < rest.length) {
+        if (rest[j] === "\\" && j + 1 < rest.length) {
+          j += 2;
+          continue;
+        }
+        if (rest[j] === quote) {
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      push("str", rest.slice(0, j));
+      i += j;
+      continue;
+    }
+    // Identifier / keyword
+    const idMatch = /^[A-Za-z_$][A-Za-z0-9_$]*/.exec(rest);
+    if (idMatch) {
+      const word = idMatch[0];
+      // Function-call identifier: ident immediately followed by `(`.
+      const after = rest[word.length];
+      if (kws.has(word)) {
+        push("kw", word);
+      } else if (after === "(") {
+        push("fn", word);
+      } else {
+        push(null, word);
+      }
+      i += word.length;
+      continue;
+    }
+    // Numeric literal
+    const numMatch = /^\d[\d_.]*/.exec(rest);
+    if (numMatch) {
+      push("num-tok", numMatch[0]);
+      i += numMatch[0].length;
+      continue;
+    }
+    // Default: a single char of "other". `rest[0]` is non-undefined here
+    // because the while-loop guard ensures `i < line.length`.
+    push(null, rest[0] ?? "");
+    i += 1;
   }
-  return <ul className="pb-2">{children}</ul>;
-}
 
-function Empty({ children }: { children: React.ReactNode }) {
-  return <li className="px-3 py-1 text-xs text-muted-foreground">{children}</li>;
+  return tokens.map((t) =>
+    t.cls ? (
+      <span key={t.key} className={t.cls}>
+        {t.text}
+      </span>
+    ) : (
+      <span key={t.key}>{t.text}</span>
+    ),
+  );
 }
-
-function matchesFile(a: string | null | undefined, b: string | null | undefined): boolean {
-  if (!a || !b) return false;
-  return a === b;
-}
-

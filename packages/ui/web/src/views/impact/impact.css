@@ -1,0 +1,412 @@
+/* Impact · Forward Constellation — Observatory tokens for the Impact tab.
+ *
+ * Mirrors the grammar of `graph/observatory.css` (cosmic background, italic
+ * Newsreader serif for prose, JetBrains Mono for data) but adds the impact-
+ * specific control bar, file-blast-radius panel, and risk-coded swatches.
+ *
+ * Layer stack inside `.impact-stage .canvas-region`:
+ *   nebula (z 0) → cytoscape (z 1) → anchor flare (z 5) → smart labels (z 6)
+ *   → summary caption (z 8) → file-blast-radius (z 8) → legend (z 8)
+ */
+
+.impact-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(122, 168, 255, 0.04), transparent 60%),
+    linear-gradient(180deg, #0c1325 0%, #050810 100%);
+  isolation: isolate;
+  color: #f5f5f5;
+  display: grid;
+  grid-template-rows: 56px 48px 1fr 36px;
+  min-height: 0;
+}
+
+.impact-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1px 1px at 8% 21%, rgba(255, 255, 255, 0.4), transparent 50%),
+    radial-gradient(1px 1px at 67% 12%, rgba(255, 255, 255, 0.25), transparent 50%),
+    radial-gradient(1px 1px at 12% 78%, rgba(255, 255, 255, 0.35), transparent 50%),
+    radial-gradient(1px 1px at 88% 67%, rgba(255, 255, 255, 0.25), transparent 50%),
+    radial-gradient(1px 1px at 39% 89%, rgba(255, 255, 255, 0.3), transparent 50%),
+    radial-gradient(1px 1px at 53% 41%, rgba(255, 255, 255, 0.18), transparent 50%);
+  opacity: 0.55;
+  z-index: 0;
+}
+
+/* Top bar — same vibe as graph view. */
+.impact-stage .topbar {
+  display: flex;
+  align-items: center;
+  padding: 0 28px;
+  gap: 28px;
+  border-bottom: 1px solid rgba(245, 245, 245, 0.06);
+  position: relative;
+  z-index: 1;
+}
+
+.impact-stage .topbar .tabs {
+  display: flex;
+  gap: 22px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(245, 245, 245, 0.55);
+}
+.impact-stage .topbar .tabs .active {
+  color: #f5f5f5;
+}
+.impact-stage .topbar .tabs .active::after {
+  content: "";
+  display: block;
+  height: 1px;
+  background: #ff5c6a;
+  margin-top: 4px;
+}
+.impact-stage .topbar .session {
+  margin-left: auto;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: rgba(245, 245, 245, 0.32);
+  text-transform: uppercase;
+}
+.impact-stage .topbar .session strong {
+  color: rgba(245, 245, 245, 0.78);
+  font-weight: 500;
+}
+
+/* Control bar — seed + stats + symbol search + depth. */
+.impact-stage .controls {
+  display: flex;
+  align-items: center;
+  padding: 0 28px;
+  gap: 22px;
+  border-bottom: 1px solid rgba(245, 245, 245, 0.06);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: rgba(245, 245, 245, 0.55);
+  letter-spacing: 0.04em;
+  position: relative;
+  z-index: 4;
+  min-width: 0;
+}
+.impact-stage .controls .seed {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.impact-stage .controls .seed .lbl {
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: rgba(245, 245, 245, 0.32);
+  text-transform: uppercase;
+}
+.impact-stage .controls .seed .val {
+  font-size: 13px;
+  color: #ff5c6a;
+  font-weight: 500;
+}
+.impact-stage .controls .seed .file {
+  font-size: 10.5px;
+  color: rgba(245, 245, 245, 0.32);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+.impact-stage .controls .stats {
+  margin-left: auto;
+  display: flex;
+  gap: 18px;
+}
+.impact-stage .controls .stat .v {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 14px;
+  color: #f5f5f5;
+  font-weight: 500;
+}
+.impact-stage .controls .stat .l {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 9px;
+  color: rgba(245, 245, 245, 0.32);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-left: 6px;
+}
+.impact-stage .controls .stat.hot .v { color: #ff5c6a; }
+.impact-stage .controls .stat.warn .v { color: #ffb547; }
+.impact-stage .controls .stat.cool .v { color: #5cd5ff; }
+
+.impact-stage .controls .run-btn {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  border: 1px solid rgba(255, 92, 106, 0.4);
+  background: rgba(255, 92, 106, 0.08);
+  color: #ffd1d6;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.impact-stage .controls .run-btn:hover:not(:disabled) {
+  background: rgba(255, 92, 106, 0.16);
+}
+.impact-stage .controls .run-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.impact-stage .controls .depth {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(245, 245, 245, 0.55);
+}
+.impact-stage .controls .depth input[type="range"] {
+  width: 100px;
+  accent-color: #ff5c6a;
+}
+.impact-stage .controls .depth .v {
+  color: #f5f5f5;
+  width: 14px;
+  text-align: right;
+}
+
+/* Canvas region — full-width single cytoscape. */
+.impact-stage .canvas-region {
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Top-left summary prose. */
+.impact-stage .impact-summary {
+  position: absolute;
+  left: 28px;
+  top: 24px;
+  max-width: 320px;
+  z-index: 8;
+  pointer-events: none;
+  font-family: "Newsreader", Georgia, serif;
+  font-style: italic;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: rgba(245, 245, 245, 0.78);
+  font-weight: 300;
+}
+.impact-stage .impact-summary .em {
+  color: #ff5c6a;
+  font-weight: 500;
+}
+.impact-stage .impact-summary .mono {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-style: normal;
+  font-size: 12px;
+  color: rgba(245, 245, 245, 0.55);
+}
+
+/* Top-right file blast-radius. */
+.impact-stage .file-blast-radius {
+  position: absolute;
+  right: 28px;
+  top: 24px;
+  width: 280px;
+  z-index: 8;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  color: rgba(245, 245, 245, 0.55);
+}
+.impact-stage .file-blast-radius .head {
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: rgba(245, 245, 245, 0.32);
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.impact-stage .file-blast-radius .file-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(245, 245, 245, 0.06);
+  align-items: baseline;
+  background: transparent;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+.impact-stage .file-blast-radius .file-row:hover .name {
+  color: rgba(255, 209, 214, 0.85);
+}
+.impact-stage .file-blast-radius .file-row .name {
+  font-style: italic;
+  font-family: "Newsreader", Georgia, serif;
+  font-size: 13px;
+  color: rgba(245, 245, 245, 0.78);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.impact-stage .file-blast-radius .file-row .count {
+  font-size: 10px;
+  color: rgba(245, 245, 245, 0.55);
+}
+.impact-stage .file-blast-radius .file-row .max.hot { color: #ff5c6a; }
+.impact-stage .file-blast-radius .file-row .max.warn { color: #ffb547; }
+.impact-stage .file-blast-radius .file-row .max.cool { color: #5cd5ff; }
+
+/* Bottom legend. */
+.impact-stage .impact-legend {
+  display: flex;
+  align-items: center;
+  padding: 0 28px;
+  border-top: 1px solid rgba(245, 245, 245, 0.06);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: rgba(245, 245, 245, 0.32);
+  text-transform: uppercase;
+  position: relative;
+  z-index: 1;
+  gap: 24px;
+}
+.impact-stage .impact-legend .seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.impact-stage .impact-legend .swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+/* Empty / loading / error placeholders inside the canvas region. */
+.impact-stage .impact-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 0 32px;
+  z-index: 6;
+  font-family: "Newsreader", Georgia, serif;
+  color: rgba(245, 245, 245, 0.55);
+  pointer-events: none;
+}
+.impact-stage .impact-placeholder .lit {
+  font-style: italic;
+  font-size: 16px;
+  color: rgba(245, 245, 245, 0.78);
+  font-weight: 300;
+}
+.impact-stage .impact-placeholder .sub {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(245, 245, 245, 0.42);
+  max-width: 460px;
+}
+.impact-stage .impact-error {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  border: 1px solid rgba(255, 92, 106, 0.4);
+  background: rgba(255, 92, 106, 0.1);
+  color: #ffd1d6;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  padding: 12px 16px;
+  border-radius: 4px;
+  max-width: 480px;
+}
+
+/* Symbol-search override for impact (matches dark theme). */
+.impact-stage .controls .symbol-search {
+  position: relative;
+  width: 240px;
+}
+.impact-stage .controls .symbol-search input {
+  width: 100%;
+  background: rgba(12, 19, 37, 0.8);
+  border: 1px solid rgba(245, 245, 245, 0.12);
+  color: #f5f5f5;
+  padding: 5px 10px;
+  border-radius: 3px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  outline: none;
+}
+.impact-stage .controls .symbol-search input::placeholder {
+  color: rgba(245, 245, 245, 0.32);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.impact-stage .controls .symbol-search input:focus {
+  border-color: rgba(255, 92, 106, 0.5);
+}
+.impact-stage .controls .symbol-search .dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin-top: 4px;
+  background: #0c1325;
+  border: 1px solid rgba(245, 245, 245, 0.12);
+  border-radius: 3px;
+  max-height: 280px;
+  overflow: auto;
+  z-index: 20;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.impact-stage .controls .symbol-search .dropdown button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(245, 245, 245, 0.04);
+  color: rgba(245, 245, 245, 0.78);
+  padding: 5px 10px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.impact-stage .controls .symbol-search .dropdown button:hover {
+  background: rgba(255, 92, 106, 0.06);
+  color: #ffd1d6;
+}
+.impact-stage .controls .symbol-search .dropdown .meta {
+  color: rgba(245, 245, 245, 0.42);
+  margin-left: 6px;
+}
+.impact-stage .controls .symbol-search .dropdown .empty {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: rgba(245, 245, 245, 0.42);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}

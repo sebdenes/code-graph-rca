@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8">
+  <title>Impact · Forward Constellation (mockup)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /*
+     * Halo · Impact tab — direction γ: Forward Constellation
+     * Same Observatory grammar — nebulas per file, lens flare on the seed,
+     * smart-labels — but limited to forward-reachable nodes only.
+     * Risk encoded as node FILL SATURATION (cyan→amber→red), so file
+     * cosmography is preserved. Edges follow the call graph, not radial
+     * hop layout. Best for "where in MY codebase does this change land?"
+     * — preserves spatial intuition from the Graph tab.
+     */
+    :root {
+      --bg-top: #0c1325;
+      --bg-bottom: #050810;
+      --ink: #f5f5f5;
+      --ink-soft: rgba(245,245,245,0.78);
+      --ink-mute: rgba(245,245,245,0.55);
+      --ink-faint: rgba(245,245,245,0.32);
+      --ink-ghost: rgba(245,245,245,0.18);
+      --halo-red: #ff5c6a;
+      --halo-amber: #ffb547;
+      --halo-cyan: #5cd5ff;
+      --halo-mint: #5dd699;
+      --rule: rgba(245,245,245,0.06);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin:0; padding:0; height:100%; background: linear-gradient(180deg,var(--bg-top) 0%, var(--bg-bottom) 100%); color: var(--ink); font-family: "Newsreader", Georgia, serif; overflow: hidden; }
+
+    body::before {
+      content:""; position: fixed; inset:0; pointer-events:none; z-index:0; opacity:.55;
+      background-image:
+        radial-gradient(1px 1px at 8% 21%, rgba(255,255,255,0.4), transparent),
+        radial-gradient(1px 1px at 67% 12%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 12% 78%, rgba(255,255,255,0.35), transparent),
+        radial-gradient(1px 1px at 88% 67%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 39% 89%, rgba(255,255,255,0.3), transparent),
+        radial-gradient(1px 1px at 53% 41%, rgba(255,255,255,0.18), transparent);
+    }
+
+    .stage { position: relative; z-index:1; height: 100vh; display: grid; grid-template-rows: 56px 48px 1fr 36px; }
+
+    .topbar { display:flex; align-items: center; padding: 0 28px; gap: 28px; border-bottom: 1px solid var(--rule); }
+    .brand { font-style: italic; font-weight:400; font-size: 22px; letter-spacing: -0.02em; }
+    .brand .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--halo-red); box-shadow: 0 0 0 3px rgba(255,92,106,.18), 0 0 14px rgba(255,92,106,.55); transform: translateY(-8px); margin-left: 4px; }
+    .tabs { display:flex; gap: 22px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .15em; text-transform: uppercase; color: var(--ink-mute); }
+    .tabs .active { color: var(--ink); }
+    .tabs .active::after { content:""; display:block; height:1px; background: var(--halo-red); margin-top: 4px; }
+    .session { margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .12em; color: var(--ink-faint); text-transform: uppercase; }
+    .session strong { color: var(--ink-soft); font-weight: 500; }
+
+    .controls { display:flex; align-items: center; padding: 0 28px; gap: 22px; border-bottom: 1px solid var(--rule); font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-mute); letter-spacing: .04em; }
+    .controls .seed { display:flex; align-items: baseline; gap: 10px; }
+    .controls .seed .lbl { font-size: 9px; letter-spacing: .18em; color: var(--ink-faint); text-transform: uppercase; }
+    .controls .seed .val { font-size: 13px; color: var(--halo-red); font-weight: 500; }
+    .controls .seed .file { font-size: 10.5px; color: var(--ink-faint); }
+    .controls .stats { margin-left: auto; display:flex; gap: 18px; }
+    .controls .stat .v { font-family: "JetBrains Mono", monospace; font-size: 14px; color: var(--ink); font-weight: 500; }
+    .controls .stat .l { font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: .14em; text-transform: uppercase; margin-left: 6px; }
+    .controls .stat.hot .v { color: var(--halo-red); }
+    .controls .stat.warn .v { color: var(--halo-amber); }
+
+    .canvas { position: relative; overflow: hidden; }
+    .chart-svg { width: 100%; height: 100%; display: block; }
+    .summary { position: absolute; left: 28px; top: 24px; max-width: 320px; }
+    .summary .lit { font-style: italic; font-size: 14.5px; line-height: 1.55; color: var(--ink-soft); font-weight: 300; }
+    .summary .lit .em { color: var(--halo-red); font-weight: 500; }
+    .summary .lit .mono { font-family: "JetBrains Mono", monospace; font-style: normal; font-size: 12px; color: var(--ink-mute); }
+
+    .file-summary { position: absolute; right: 28px; top: 24px; width: 280px; font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-mute); }
+    .file-summary .head { font-size: 9px; letter-spacing: .18em; color: var(--ink-faint); text-transform: uppercase; margin-bottom: 12px; }
+    .file-summary .file-row { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--rule); align-items: baseline; }
+    .file-summary .file-row .name { font-style: italic; font-family: "Newsreader"; font-size: 13px; color: var(--ink-soft); }
+    .file-summary .file-row .count { font-size: 10px; color: var(--ink-mute); }
+    .file-summary .file-row .max { font-size: 10px; }
+    .file-summary .file-row .max.hot { color: var(--halo-red); }
+    .file-summary .file-row .max.warn { color: var(--halo-amber); }
+    .file-summary .file-row .max.cool { color: var(--halo-cyan); }
+
+    .bottom-bar { display: flex; align-items: center; padding: 0 28px; border-top: 1px solid var(--rule); font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .12em; color: var(--ink-faint); text-transform: uppercase; }
+    .bottom-bar .seg { margin-right: 24px; display:flex; align-items:center; gap: 6px; }
+    .bottom-bar .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+  </style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="topbar">
+    <div class="brand">Halo<span class="dot"></span></div>
+    <div class="tabs">
+      <span>Graph</span>
+      <span>RCA</span>
+      <span class="active">Impact</span>
+    </div>
+    <div class="session">
+      Session <strong>self-rca</strong> · 21 files · 312 symbols · 1458 edges · v0.4.1
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="seed">
+      <span class="lbl">Seed</span>
+      <span class="val">indexScope</span>
+      <span class="file">orchestrator.ts:91</span>
+    </div>
+    <div class="stats">
+      <div class="stat hot"><span class="v">0.85</span><span class="l">max risk</span></div>
+      <div class="stat warn"><span class="v">14</span><span class="l">affected</span></div>
+      <div class="stat"><span class="v">5</span><span class="l">files</span></div>
+      <div class="stat"><span class="v">3</span><span class="l">depth</span></div>
+    </div>
+  </div>
+
+  <div class="canvas">
+    <div class="summary">
+      <div class="lit">
+        Changing <span class="em">indexScope</span> propagates across
+        <span class="mono">5 files</span>, with the worst impact landing in
+        <span class="em">mcp/server.ts</span> — every editor query passes
+        through there.
+      </div>
+    </div>
+
+    <div class="file-summary">
+      <div class="head">Files in blast radius · 5</div>
+      <div class="file-row">
+        <span class="name">mcp/server.ts</span>
+        <span class="count">2 sym</span>
+        <span class="max hot">0.85</span>
+      </div>
+      <div class="file-row">
+        <span class="name">cli.ts</span>
+        <span class="count">5 sym</span>
+        <span class="max warn">0.70</span>
+      </div>
+      <div class="file-row">
+        <span class="name">daemon/server.ts</span>
+        <span class="count">3 sym</span>
+        <span class="max cool">0.50</span>
+      </div>
+      <div class="file-row">
+        <span class="name">rca/runner.ts</span>
+        <span class="count">2 sym</span>
+        <span class="max warn">0.70</span>
+      </div>
+      <div class="file-row">
+        <span class="name">graph/queries.ts</span>
+        <span class="count">2 sym</span>
+        <span class="max cool">0.40</span>
+      </div>
+    </div>
+
+    <svg class="chart-svg" viewBox="0 0 1200 660" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <radialGradient id="neb-orch">
+          <stop offset="0%" stop-color="hsla(30,80%,50%,0.55)"/>
+          <stop offset="60%" stop-color="hsla(30,70%,35%,0.14)"/>
+          <stop offset="100%" stop-color="hsla(30,80%,30%,0)"/>
+        </radialGradient>
+        <radialGradient id="neb-cli">
+          <stop offset="0%" stop-color="hsla(150,80%,50%,0.45)"/>
+          <stop offset="60%" stop-color="hsla(150,70%,35%,0.12)"/>
+          <stop offset="100%" stop-color="hsla(150,80%,30%,0)"/>
+        </radialGradient>
+        <radialGradient id="neb-mcp">
+          <stop offset="0%" stop-color="hsla(280,80%,50%,0.55)"/>
+          <stop offset="60%" stop-color="hsla(280,70%,35%,0.14)"/>
+          <stop offset="100%" stop-color="hsla(280,80%,30%,0)"/>
+        </radialGradient>
+        <radialGradient id="neb-daemon">
+          <stop offset="0%" stop-color="hsla(190,80%,50%,0.45)"/>
+          <stop offset="60%" stop-color="hsla(190,70%,35%,0.12)"/>
+          <stop offset="100%" stop-color="hsla(190,80%,30%,0)"/>
+        </radialGradient>
+        <radialGradient id="neb-runner">
+          <stop offset="0%" stop-color="hsla(240,80%,50%,0.45)"/>
+          <stop offset="60%" stop-color="hsla(240,70%,35%,0.12)"/>
+          <stop offset="100%" stop-color="hsla(240,80%,30%,0)"/>
+        </radialGradient>
+        <radialGradient id="neb-queries">
+          <stop offset="0%" stop-color="hsla(320,80%,50%,0.42)"/>
+          <stop offset="60%" stop-color="hsla(320,70%,35%,0.11)"/>
+          <stop offset="100%" stop-color="hsla(320,80%,30%,0)"/>
+        </radialGradient>
+        <radialGradient id="seed-flare-2">
+          <stop offset="0%" stop-color="rgba(255,92,106,0.85)"/>
+          <stop offset="40%" stop-color="rgba(255,92,106,0.32)"/>
+          <stop offset="80%" stop-color="rgba(255,92,106,0.08)"/>
+          <stop offset="100%" stop-color="rgba(255,92,106,0)"/>
+        </radialGradient>
+      </defs>
+
+      <!-- nebulas: file clusters in their own neighborhoods -->
+      <circle cx="240" cy="430" r="170" fill="url(#neb-orch)"/>            <!-- orchestrator (seed lives here) -->
+      <circle cx="500" cy="270" r="150" fill="url(#neb-cli)"/>             <!-- cli.ts -->
+      <circle cx="800" cy="200" r="160" fill="url(#neb-mcp)"/>             <!-- mcp/server.ts (worst impact) -->
+      <circle cx="970" cy="430" r="130" fill="url(#neb-daemon)"/>          <!-- daemon/server.ts -->
+      <circle cx="700" cy="500" r="120" fill="url(#neb-runner)"/>          <!-- runner.ts -->
+      <circle cx="380" cy="180" r="100" fill="url(#neb-queries)"/>         <!-- queries.ts -->
+
+      <!-- nebula labels (italic serif, low opacity) -->
+      <g font-family="Newsreader" font-style="italic" font-size="14" fill="rgba(245,245,245,0.42)">
+        <text x="160" y="350" text-anchor="middle">orchestrator.ts</text>
+        <text x="500" y="170" text-anchor="middle">cli.ts</text>
+        <text x="800" y="98" text-anchor="middle">mcp/server.ts</text>
+        <text x="1060" y="380" text-anchor="middle">daemon/server.ts</text>
+        <text x="800" y="555" text-anchor="middle">runner.ts</text>
+        <text x="305" y="120" text-anchor="middle">queries.ts</text>
+      </g>
+
+      <!-- forward edges from indexScope (faint cyan, lit on hover would be brighter) -->
+      <g stroke="rgba(122,168,255,0.28)" stroke-width="1" fill="none">
+        <!-- seed → cli cluster -->
+        <line x1="240" y1="430" x2="475" y2="270"/>             <!-- → cmdIndex -->
+        <line x1="240" y1="430" x2="510" y2="295"/>             <!-- → cmdRca -->
+        <line x1="240" y1="430" x2="535" y2="240"/>             <!-- → cmdDefine -->
+        <line x1="240" y1="430" x2="490" y2="320"/>             <!-- → cmdCallers -->
+        <line x1="240" y1="430" x2="465" y2="248"/>             <!-- → cmdChanged -->
+        <!-- seed → mcp cluster -->
+        <line x1="240" y1="430" x2="785" y2="195"/>             <!-- → ensureIndex -->
+        <line x1="240" y1="430" x2="820" y2="225"/>             <!-- → mcpDispatch -->
+        <!-- seed → daemon -->
+        <line x1="240" y1="430" x2="955" y2="425"/>             <!-- → daemonIndex -->
+        <line x1="240" y1="430" x2="985" y2="445"/>             <!-- → daemonRpc -->
+        <!-- seed → runner -->
+        <line x1="240" y1="430" x2="690" y2="500"/>             <!-- → runRca -->
+        <line x1="240" y1="430" x2="715" y2="475"/>             <!-- → resolveScope -->
+        <!-- seed → queries -->
+        <line x1="240" y1="430" x2="370" y2="180"/>             <!-- → callersOf -->
+        <line x1="240" y1="430" x2="395" y2="195"/>             <!-- → calleesOf -->
+      </g>
+
+      <!-- Highlight: lit edge to the worst impact (mcp ensureIndex) -->
+      <line x1="240" y1="430" x2="785" y2="195" stroke="rgba(255,92,106,0.55)" stroke-width="1.6" fill="none"/>
+
+      <!-- ============ SEED (indexScope) ============ -->
+      <circle cx="240" cy="430" r="80" fill="url(#seed-flare-2)"/>
+      <g stroke="#ff5c6a" stroke-opacity="0.78" stroke-width="0.9" stroke-linecap="round">
+        <line x1="240" y1="378" x2="240" y2="482"/>
+        <line x1="188" y1="430" x2="292" y2="430"/>
+      </g>
+      <g stroke="#ff5c6a" stroke-opacity="0.4" stroke-width="0.7" stroke-linecap="round">
+        <line x1="208" y1="398" x2="272" y2="462"/>
+        <line x1="272" y1="398" x2="208" y2="462"/>
+      </g>
+      <g fill="none" stroke="#ff5c6a">
+        <circle cx="240" cy="430" r="14" stroke-opacity="0.85" stroke-width="1.5"/>
+        <circle cx="240" cy="430" r="22" stroke-opacity="0.4"/>
+        <circle cx="240" cy="430" r="34" stroke-opacity="0.18"/>
+      </g>
+      <circle cx="240" cy="430" r="7" fill="#ff5c6a"/>
+      <text x="258" y="426" font-family="JetBrains Mono" font-size="13" fill="#ff5c6a" font-weight="500">indexScope</text>
+      <text x="258" y="442" font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.55)">orchestrator.ts:91</text>
+
+      <!-- mcp/server.ts cluster — WORST IMPACT (red+amber nodes) -->
+      <g>
+        <!-- ensureIndex (risk 0.85) -->
+        <circle cx="785" cy="195" r="6.5" fill="#ff5c6a"/>
+        <circle cx="785" cy="195" r="13" fill="none" stroke="#5dd699" stroke-width="1.3" stroke-opacity="0.85"/>
+        <text x="803" y="190" font-family="JetBrains Mono" font-size="12" fill="rgba(245,245,245,0.95)" font-weight="500">ensureIndex</text>
+        <text x="803" y="204" font-family="JetBrains Mono" font-size="10" fill="rgba(255,92,106,0.85)">0.85 · ✓</text>
+        <!-- mcpDispatch (risk 0.5) -->
+        <circle cx="820" cy="225" r="4" fill="#ffb547"/>
+        <circle cx="820" cy="225" r="9" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.6"/>
+        <text x="833" y="222" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.7)">mcpDispatch</text>
+        <text x="833" y="234" font-family="JetBrains Mono" font-size="9" fill="rgba(255,181,71,0.7)">0.50</text>
+      </g>
+
+      <!-- cli.ts cluster (5 cmd functions, varying risk) -->
+      <g>
+        <circle cx="475" cy="270" r="4.5" fill="#5cd5ff"/>
+        <circle cx="475" cy="270" r="10" fill="none" stroke="rgba(255,92,106,0.32)" stroke-width="1" stroke-dasharray="2 2"/>
+        <text x="491" y="267" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.78)">cmdIndex</text>
+        <text x="491" y="279" font-family="JetBrains Mono" font-size="9" fill="rgba(245,245,245,0.42)">0.50 · ✗</text>
+
+        <circle cx="510" cy="295" r="5" fill="#ffb547"/>
+        <circle cx="510" cy="295" r="11" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.7"/>
+        <text x="524" y="299" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.85)">cmdRca</text>
+        <text x="524" y="311" font-family="JetBrains Mono" font-size="9" fill="rgba(255,181,71,0.7)">0.70 · ✓</text>
+
+        <circle cx="535" cy="240" r="4.5" fill="#ffb547" opacity="0.85"/>
+        <circle cx="535" cy="240" r="10" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.6"/>
+        <text x="549" y="244" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.8)">cmdDefine</text>
+
+        <circle cx="490" cy="320" r="4" fill="#5cd5ff"/>
+        <circle cx="490" cy="320" r="9" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.6"/>
+        <text x="503" y="324" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.7)">cmdCallers</text>
+
+        <circle cx="465" cy="248" r="3.5" fill="#5cd5ff" opacity="0.8"/>
+        <circle cx="465" cy="248" r="8" fill="none" stroke="rgba(255,92,106,0.3)" stroke-width="1" stroke-dasharray="2 2"/>
+        <text x="478" y="252" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.65)">cmdChanged</text>
+      </g>
+
+      <!-- daemon/server.ts cluster -->
+      <g>
+        <circle cx="955" cy="425" r="4.5" fill="#ffb547" opacity="0.7"/>
+        <circle cx="955" cy="425" r="10" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.6"/>
+        <text x="970" y="429" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.78)">daemonIndex</text>
+
+        <circle cx="985" cy="445" r="4" fill="#5cd5ff"/>
+        <circle cx="985" cy="445" r="9" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.6"/>
+        <text x="999" y="449" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.7)">daemonRpc</text>
+
+        <circle cx="945" cy="465" r="3.5" fill="#5cd5ff" opacity="0.85"/>
+        <circle cx="945" cy="465" r="8" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.55"/>
+        <text x="959" y="469" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.6)">handleIncident</text>
+      </g>
+
+      <!-- runner.ts cluster -->
+      <g>
+        <circle cx="690" cy="500" r="5" fill="#ffb547"/>
+        <circle cx="690" cy="500" r="11" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.7"/>
+        <text x="705" y="495" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.85)">runRca</text>
+        <text x="705" y="509" font-family="JetBrains Mono" font-size="9" fill="rgba(255,181,71,0.7)">0.70 · ✓</text>
+
+        <circle cx="715" cy="475" r="3.8" fill="#5cd5ff"/>
+        <circle cx="715" cy="475" r="9" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.55"/>
+        <text x="729" y="479" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.7)">resolveScope</text>
+      </g>
+
+      <!-- queries.ts cluster -->
+      <g>
+        <circle cx="370" cy="180" r="3.5" fill="#5cd5ff" opacity="0.85"/>
+        <circle cx="370" cy="180" r="8" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.55"/>
+        <text x="354" y="184" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.7)" text-anchor="end">callersOf</text>
+
+        <circle cx="395" cy="195" r="3.5" fill="#5cd5ff" opacity="0.85"/>
+        <circle cx="395" cy="195" r="8" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.55"/>
+        <text x="409" y="199" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.7)">calleesOf</text>
+      </g>
+
+    </svg>
+  </div>
+
+  <div class="bottom-bar">
+    <span class="seg"><span class="swatch" style="background:#ff5c6a"></span>seed</span>
+    <span class="seg"><span class="swatch" style="background:#ff5c6a"></span>risk ≥ 0.8</span>
+    <span class="seg"><span class="swatch" style="background:#ffb547"></span>0.5–0.79</span>
+    <span class="seg"><span class="swatch" style="background:#5cd5ff"></span>&lt; 0.5</span>
+    <span class="seg">file = nebula · ring = test coverage</span>
+    <span style="margin-left:auto;color:rgba(245,245,245,0.18)">click cluster · zoom into a file's blast radius</span>
+  </div>
+</div>
+</body>
+</html>

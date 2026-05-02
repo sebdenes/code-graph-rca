@@ -1,6 +1,6 @@
 {
   "name": "code-graph-rca-ui",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Visual graph explorer for code-graph-rca. Constellation-style force-directed view of the indexed code knowledge graph, Monaco code inspector, RCA candidate ranking + Impact (blast-radius) tabs.",
   "type": "module",
   "license": "MIT",

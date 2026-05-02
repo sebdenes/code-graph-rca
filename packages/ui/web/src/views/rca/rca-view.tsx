@@ -1,3 +1,18 @@
+/**
+ * RCA · Evidence Board view.
+ *
+ * Layout: 3-column grid (360 dossiers / 1fr graph / 380 inspector) + a
+ * 36px bottom 7-signal legend bar. The cosmic styling lives in `rca.css`;
+ * the AppShell still owns the actual top bar (Halo wordmark + Graph/RCA/
+ * Impact tabs + session HUD), so we don't duplicate it here.
+ *
+ * Data flow is unchanged from the previous version:
+ *   1. `api.rca(sessionId)` for the snapshot (anchor + ranked candidates).
+ *   2. `callersOf(name, depth=2)` and `calleesOf(name, depth=1)` for the
+ *      neighborhood feeding the middle graph.
+ *   3. The clicked dossier writes the selection into the zustand session
+ *      store, which the side panel then reads to load source + commits.
+ */
 import { useMemo } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { CallerTree, CalleeTree, CausalCandidate } from "code-graph-rca";
@@ -7,6 +22,8 @@ import { CandidatesPanel } from "./candidates-panel.tsx";
 import { SidePanel } from "./side-panel.tsx";
 import { Graph } from "../../components/graph/graph.tsx";
 import { buildElements } from "../../components/graph/build-elements.ts";
+import { SIGNAL_COLORS, SIGNAL_LABELS } from "./signal-radial.tsx";
+import "./rca.css";
 
 export function RcaView({ sessionId }: { sessionId: string }) {
   const selectedSymbol = useSession((s) => s.selectedSymbol);
@@ -60,51 +77,43 @@ export function RcaView({ sessionId }: { sessionId: string }) {
     );
   }, [rcaQ.data, selectedSymbol]);
 
-  // Loading state
+  // ----- Loading / error / empty states (cosmic-styled) -----
   if (rcaQ.isPending) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground animate-pulse">
-        Loading graph…
-      </div>
-    );
+    return <div className="rca-state">Loading the evidence board…</div>;
   }
-
-  // Error state
   if (rcaQ.error) {
     return (
-      <div className="m-4 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700">
-        Failed to load RCA: {String(rcaQ.error)}
+      <div className="rca-state error">
+        Failed to load RCA — {String(rcaQ.error)}
       </div>
     );
   }
-
   if (!rcaQ.data) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        No RCA snapshot.
-      </div>
-    );
+    return <div className="rca-state">No RCA snapshot available.</div>;
   }
 
   const rca = rcaQ.data;
 
   return (
-    <div className="flex h-full">
-      <aside className="flex w-[300px] shrink-0 flex-col border-r border-border">
-        <CandidatesPanel
-          candidates={rca.causalCandidates}
-          selectedSymbol={selectedSymbol}
-          onSelect={(c) => selectSymbol({ name: c.name, file: c.file ?? null, line: c.line ?? null })}
-        />
-      </aside>
+    <div className="rca-stage">
+      <CandidatesPanel
+        candidates={rca.causalCandidates}
+        selectedSymbol={selectedSymbol}
+        anchorName={rca.primarySymbol}
+        onSelect={(c) =>
+          selectSymbol({
+            name: c.name,
+            file: c.file ?? null,
+            line: c.line ?? null,
+          })
+        }
+      />
 
-      <section className="relative flex-1 min-w-0">
+      <section className="rca-middle">
         {(callersQ.isPending || calleesQ.isPending) && elements.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground animate-pulse">
-            Loading graph…
-          </div>
-        ) : (callersQ.error || calleesQ.error) ? (
-          <div className="m-4 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700">
+          <div className="rca-graph-empty">Loading neighborhood…</div>
+        ) : callersQ.error || calleesQ.error ? (
+          <div className="rca-graph-error">
             Failed to load neighborhood: {String(callersQ.error ?? calleesQ.error)}
           </div>
         ) : (
@@ -118,13 +127,26 @@ export function RcaView({ sessionId }: { sessionId: string }) {
         )}
       </section>
 
-      <aside className="flex w-[360px] shrink-0 flex-col border-l border-border">
-        <SidePanel
-          sessionId={sessionId}
-          selectedSymbol={selectedSymbol}
-          candidate={selectedCandidate}
-        />
-      </aside>
+      <SidePanel
+        sessionId={sessionId}
+        selectedSymbol={selectedSymbol}
+        candidate={selectedCandidate}
+      />
+
+      <div className="rca-bottom-bar">
+        {SIGNAL_LABELS.map((s) => (
+          <span key={s.key} className="seg">
+            <span
+              className="swatch"
+              style={{ background: SIGNAL_COLORS[s.key] }}
+            />
+            {s.short}
+          </span>
+        ))}
+        <span className="scale">
+          7-signal radial · ray length = score
+        </span>
+      </div>
     </div>
   );
 }

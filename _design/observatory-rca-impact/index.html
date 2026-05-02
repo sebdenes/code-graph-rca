@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8">
+  <title>Halo · RCA + Impact redesign — exploration</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /*
+     * 2×2 design canvas. RCA (top row) × Impact (bottom row) — 2 directions each.
+     * Click any cell to open the standalone HTML in a new tab at full viewport.
+     */
+    :root {
+      --bg-top: #0c1325;
+      --bg-bottom: #050810;
+      --ink: #f5f5f5;
+      --ink-soft: rgba(245,245,245,0.78);
+      --ink-mute: rgba(245,245,245,0.55);
+      --ink-faint: rgba(245,245,245,0.32);
+      --halo-red: #ff5c6a;
+      --rule: rgba(245,245,245,0.06);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin:0; padding:0; min-height:100vh; background: linear-gradient(180deg,var(--bg-top) 0%, var(--bg-bottom) 100%); color: var(--ink); font-family: "Newsreader", Georgia, serif; }
+    body { font-size: 14px; line-height: 1.5; }
+
+    body::before {
+      content:""; position: fixed; inset:0; pointer-events:none; z-index:0; opacity:.4;
+      background-image:
+        radial-gradient(1px 1px at 18% 21%, rgba(255,255,255,0.4), transparent),
+        radial-gradient(1px 1px at 67% 12%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 12% 78%, rgba(255,255,255,0.35), transparent),
+        radial-gradient(1px 1px at 88% 67%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 39% 89%, rgba(255,255,255,0.3), transparent);
+    }
+
+    .stage { position: relative; z-index:1; max-width: 1680px; margin: 0 auto; padding: 56px 32px 64px; }
+
+    /* hero */
+    .hero { display: grid; grid-template-columns: 1.4fr 1fr; gap: 48px; margin-bottom: 56px; }
+    .hero h1 { font-style: italic; font-weight: 400; font-size: 56px; line-height: 1.04; letter-spacing: -0.025em; margin: 0 0 16px; color: var(--ink); }
+    .hero h1 .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: var(--halo-red); box-shadow: 0 0 0 4px rgba(255,92,106,0.18), 0 0 20px rgba(255,92,106,0.5); transform: translateY(-30px); margin-left: 6px; }
+    .hero p { font-style: italic; font-weight: 300; font-size: 18px; line-height: 1.55; color: var(--ink-soft); max-width: 540px; margin: 0; }
+    .hero p .em { color: var(--halo-red); font-weight: 500; }
+    .hero p .mono { font-family: "JetBrains Mono", monospace; font-style: normal; font-size: 14.5px; color: var(--ink-mute); }
+
+    .meta { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-faint); letter-spacing: .12em; text-transform: uppercase; }
+    .meta .row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--rule); }
+    .meta .row:last-child { border-bottom: none; }
+    .meta .row .v { color: var(--ink-soft); font-weight: 500; letter-spacing: .04em; text-transform: none; }
+
+    /* row labels */
+    .row-label { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--ink-mute); letter-spacing: .18em; text-transform: uppercase; margin: 36px 0 16px; padding-bottom: 10px; border-bottom: 1px solid var(--rule); display: flex; align-items: baseline; gap: 12px; }
+    .row-label .num { font-style: italic; font-family: "Newsreader"; font-size: 22px; color: var(--halo-red); letter-spacing: -0.02em; text-transform: none; }
+    .row-label .descr { font-style: italic; font-family: "Newsreader"; font-size: 14px; font-weight: 300; color: var(--ink-mute); margin-left: auto; text-transform: none; letter-spacing: 0; }
+
+    /* 2-up grid */
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+    .cell { display: block; text-decoration: none; color: inherit; cursor: pointer; }
+    .cell .frame-wrap {
+      position: relative; aspect-ratio: 16/10;
+      background: var(--bg-bottom); border: 1px solid var(--rule);
+      overflow: hidden; transition: border-color .2s, box-shadow .2s;
+    }
+    .cell:hover .frame-wrap { border-color: rgba(255,92,106,0.4); box-shadow: 0 0 0 1px rgba(255,92,106,0.12), 0 24px 48px rgba(0,0,0,0.5); }
+    .cell iframe { width: 200%; height: 200%; border: 0; transform: scale(0.5); transform-origin: top left; pointer-events: none; }
+
+    .cell .label { display: flex; align-items: baseline; gap: 12px; margin-top: 14px; }
+    .cell .label .tag { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .15em; color: var(--halo-red); text-transform: uppercase; }
+    .cell .label .name { font-style: italic; font-size: 22px; color: var(--ink); letter-spacing: -0.02em; }
+    .cell .label .open { margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); letter-spacing: .12em; text-transform: uppercase; }
+    .cell:hover .label .open { color: var(--halo-red); }
+
+    .cell .desc { margin-top: 8px; font-style: italic; font-weight: 300; font-size: 14.5px; line-height: 1.55; color: var(--ink-soft); max-width: 580px; }
+    .cell .desc .em { color: var(--ink); font-weight: 400; }
+    .cell .traits { margin-top: 12px; display: flex; gap: 18px; flex-wrap: wrap; }
+    .cell .traits .trait { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-mute); letter-spacing: .08em; }
+    .cell .traits .trait .k { color: var(--ink-faint); text-transform: uppercase; letter-spacing: .14em; margin-right: 6px; font-size: 9px; }
+
+    /* footer cta */
+    .footer { margin-top: 64px; padding-top: 40px; border-top: 1px solid var(--rule); display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: end; }
+    .footer .ask { font-style: italic; font-weight: 300; font-size: 18px; line-height: 1.55; color: var(--ink-soft); max-width: 720px; }
+    .footer .ask .em { color: var(--halo-red); font-weight: 500; }
+    .footer .nav { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); letter-spacing: .14em; text-transform: uppercase; text-align: right; }
+    .footer .nav .file { color: var(--ink-mute); }
+  </style>
+</head>
+<body>
+<div class="stage">
+
+  <!-- ===== hero ===== -->
+  <header class="hero">
+    <div>
+      <h1>RCA + Impact redesign<span class="dot"></span></h1>
+      <p>
+        Two tabs need to grow into the <span class="em">Observatory</span> visual language
+        already shipped on the Graph page — italic-serif file labels at low opacity,
+        lens flare on the anchor, smart-labels, the <span class="mono">JetBrains Mono</span>
+        data HUD. Below: <span class="em">2 directions per tab</span>, polar opposites in
+        layout but cohesive in palette + typography. Pick one, pick a hybrid, or send me
+        back to redraw.
+      </p>
+    </div>
+    <div class="meta">
+      <div class="row"><span>Surface</span><span class="v">cgrca-view · v0.4.1</span></div>
+      <div class="row"><span>Seeded data</span><span class="v">live cgrca self-RCA</span></div>
+      <div class="row"><span>Anchor</span><span class="v">runRca · runner.ts:216</span></div>
+      <div class="row"><span>Impact seed</span><span class="v">indexScope · orchestrator.ts:91</span></div>
+      <div class="row"><span>Palette</span><span class="v">Halo cosmic · v0.4 tokens</span></div>
+      <div class="row"><span>Type</span><span class="v">Newsreader · JetBrains Mono</span></div>
+    </div>
+  </header>
+
+  <!-- ===== RCA row ===== -->
+  <div class="row-label">
+    <span class="num">01</span>
+    <span>RCA tab — verdict / case file</span>
+    <span class="descr">2 directions · pick A or B or mix</span>
+  </div>
+
+  <div class="grid">
+
+    <a class="cell" href="rca-evidence-board.html" target="_blank">
+      <div class="frame-wrap">
+        <iframe src="rca-evidence-board.html"></iframe>
+      </div>
+      <div class="label">
+        <span class="tag">RCA-A</span>
+        <span class="name">Evidence Board</span>
+        <span class="open">↗ open ↗</span>
+      </div>
+      <div class="desc">
+        Keeps the <span class="em">3-column shape</span>; upgrades each panel to Observatory grade.
+        Each candidate becomes a suspect dossier with a 7-signal radial chart, an italic-serif
+        rationale quote, and a mono ticker of recent commits. Right pane has the lit code excerpt.
+      </div>
+      <div class="traits">
+        <span class="trait"><span class="k">Best for</span>browsing 5-15 candidates</span>
+        <span class="trait"><span class="k">Density</span>high</span>
+        <span class="trait"><span class="k">Risk</span>safe — ports current data shape 1:1</span>
+        <span class="trait"><span class="k">Build</span>~60% existing components, restyled</span>
+      </div>
+    </a>
+
+    <a class="cell" href="rca-star-chart.html" target="_blank">
+      <div class="frame-wrap">
+        <iframe src="rca-star-chart.html"></iframe>
+      </div>
+      <div class="label">
+        <span class="tag">RCA-B</span>
+        <span class="name">Star Chart</span>
+        <span class="open">↗ open ↗</span>
+      </div>
+      <div class="desc">
+        Single canvas. Candidates <span class="em">are</span> stars positioned around the
+        anchor — caller above, callees right/below. The 7 signals become tiny colored
+        satellites orbiting each star. Click → side card slides in. Most cohesive with the
+        existing Graph tab.
+      </div>
+      <div class="traits">
+        <span class="trait"><span class="k">Best for</span>3-7 candidates · "verdict moments"</span>
+        <span class="trait"><span class="k">Density</span>spatial</span>
+        <span class="trait"><span class="k">Risk</span>medium — new render path</span>
+        <span class="trait"><span class="k">Build</span>SVG + signal layer</span>
+      </div>
+    </a>
+
+  </div>
+
+  <!-- ===== Impact row ===== -->
+  <div class="row-label">
+    <span class="num">02</span>
+    <span>Impact tab — blast radius / forward reach</span>
+    <span class="descr">2 directions · pick α or γ or mix</span>
+  </div>
+
+  <div class="grid">
+
+    <a class="cell" href="impact-shockwave.html" target="_blank">
+      <div class="frame-wrap">
+        <iframe src="impact-shockwave.html"></iframe>
+      </div>
+      <div class="label">
+        <span class="tag">Impact-α</span>
+        <span class="name">Shockwave</span>
+        <span class="open">↗ open ↗</span>
+      </div>
+      <div class="desc">
+        Concentric rings emanating from the seed. Hop 1 inner, hop 2 next, hop 3 outer.
+        Risk = node color (cyan→amber→red). Test coverage = solid green halo (yes) or
+        dashed red (no). Hover any node lights the chain back to seed.
+        Reads <span class="em">how far this change reaches</span> at a glance.
+      </div>
+      <div class="traits">
+        <span class="trait"><span class="k">Best for</span>"how far does it reach?"</span>
+        <span class="trait"><span class="k">Density</span>~20-30 nodes</span>
+        <span class="trait"><span class="k">Risk</span>medium — new layout algorithm</span>
+        <span class="trait"><span class="k">Build</span>D3 radial + risk colormap</span>
+      </div>
+    </a>
+
+    <a class="cell" href="impact-forward-constellation.html" target="_blank">
+      <div class="frame-wrap">
+        <iframe src="impact-forward-constellation.html"></iframe>
+      </div>
+      <div class="label">
+        <span class="tag">Impact-γ</span>
+        <span class="name">Forward Constellation</span>
+        <span class="open">↗ open ↗</span>
+      </div>
+      <div class="desc">
+        The <span class="em">Observatory graph narrowed</span> to forward-reachable nodes.
+        Same nebulas-per-file, same lens flare, same smart-labels. Risk encoded as node
+        fill saturation. Preserves spatial intuition from the Graph tab. Reads
+        <span class="em">where in the codebase</span> the change lands.
+      </div>
+      <div class="traits">
+        <span class="trait"><span class="k">Best for</span>"where in MY repo does this land?"</span>
+        <span class="trait"><span class="k">Density</span>scales to 50+ via clustering</span>
+        <span class="trait"><span class="k">Risk</span>low — reuses Graph render path</span>
+        <span class="trait"><span class="k">Build</span>most code-reuse from Graph tab</span>
+      </div>
+    </a>
+
+  </div>
+
+  <!-- ===== footer / next ===== -->
+  <div class="footer">
+    <div class="ask">
+      Where to go from here? — pick the favored direction per row, or call out a
+      <span class="em">hybrid</span> ("RCA-A's dossier cards on RCA-B's spatial canvas",
+      "Impact-α's risk colormap on Impact-γ's nebulas"). I'll deepen the chosen direction
+      next pass: real interactivity, live data wiring, and code-level integration into the
+      <span class="em">cgrca-view</span> bundle.
+    </div>
+    <div class="nav">
+      Mockups @<br>
+      <span class="file">_design/observatory-rca-impact/</span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

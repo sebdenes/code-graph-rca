@@ -9,10 +9,23 @@ interface Props {
   onChange: (next: string) => void;
   onPick: (def: Definition) => void;
   onSubmit: () => void;
+  /** Optional visual variant: when "observatory", render with the impact-tab
+   *  cosmic palette (mono dropdown rows on a deep-space background) instead
+   *  of the default Tailwind dark theme. CSS lives in `impact.css`. */
+  variant?: "default" | "observatory";
+  placeholder?: string;
 }
 
 /** Debounced symbol search. Hits `definitionOf` once query length >= 2. */
-export function SymbolSearch({ sessionId, value, onChange, onPick, onSubmit }: Props) {
+export function SymbolSearch({
+  sessionId,
+  value,
+  onChange,
+  onPick,
+  onSubmit,
+  variant = "default",
+  placeholder = "Search symbol…",
+}: Props) {
   const [matches, setMatches] = useState<Definition[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -64,6 +77,54 @@ export function SymbolSearch({ sessionId, value, onChange, onPick, onSubmit }: P
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
+  if (variant === "observatory") {
+    return (
+      <div ref={containerRef} className="symbol-search">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => {
+            onChange(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              setOpen(false);
+              onSubmit();
+            } else if (e.key === "Escape") {
+              setOpen(false);
+            }
+          }}
+          placeholder={placeholder}
+        />
+        {open && value.trim().length >= 2 && (
+          <div className="dropdown">
+            {loading && <div className="empty">Searching…</div>}
+            {!loading && matches.length === 0 && <div className="empty">No matches.</div>}
+            {matches.map((d, i) => (
+              <button
+                key={`${d.file}:${d.startLine}:${i}`}
+                type="button"
+                onClick={() => {
+                  onPick(d);
+                  setOpen(false);
+                }}
+                title={`${d.file}:${d.startLine}`}
+              >
+                {d.name}
+                <span className="meta">
+                  {d.kind} · {d.file}:{d.startLine}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div ref={containerRef} className="relative w-80">
       <input
@@ -83,7 +144,7 @@ export function SymbolSearch({ sessionId, value, onChange, onPick, onSubmit }: P
             setOpen(false);
           }
         }}
-        placeholder="Search symbol…"
+        placeholder={placeholder}
         className="w-full rounded border border-border bg-muted px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground"
       />
       {open && value.trim().length >= 2 && (

@@ -1,13 +1,30 @@
+/**
+ * Impact tab — Forward Constellation (Observatory grammar).
+ *
+ * Single full-width Cytoscape canvas narrowed to forward-reachable nodes
+ * from a chosen seed symbol. Reuses the Graph view's overlay stack: nebula
+ * clouds per file, anchor-overlay (lens flare + concentric rings) on the
+ * seed, and smart-labels for collision-avoided text. Risk is encoded as the
+ * node FILL color (cyan → amber → halo-red); test coverage is encoded as
+ * the node RING (solid green halo for tested, dashed red for untested).
+ *
+ * Layout grid (top → bottom):
+ *   topbar (56) · controls (48) · canvas (1fr) · legend (36)
+ *
+ * The control bar holds the symbol-search picker, depth slider, run button,
+ * and the seed/stats HUD (max-risk, affected, files, depth — color-coded
+ * by severity). Selection sync via the global session zustand store is
+ * preserved so node clicks still propagate to RCA / Graph.
+ */
 import { useEffect, useMemo, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type { ImpactNode, ImpactRequest, ImpactResponse } from "@shared/api";
 import { api } from "../../api/client.ts";
 import { useSession } from "../../state/session.ts";
-import { cn, scoreColor } from "../../lib/utils.ts";
 import { SymbolSearch } from "./symbol-search.tsx";
-import { ImpactTree, nodeKey } from "./impact-tree.tsx";
-import { ImpactTable } from "./impact-table.tsx";
-import { RiskSummary } from "./risk-summary.tsx";
+import { ImpactCanvas } from "./impact-canvas.tsx";
+import { FileBlastRadius, computeFileRollups } from "./file-blast-radius.tsx";
+import "./impact.css";
 
 export function ImpactView({ sessionId }: { sessionId: string }) {
   const selectedSymbol = useSession((s) => s.selectedSymbol);
@@ -17,6 +34,10 @@ export function ImpactView({ sessionId }: { sessionId: string }) {
   const [pickedFile, setPickedFile] = useState<string | null>(selectedSymbol?.file ?? null);
   const [depth, setDepth] = useState<number>(3);
   const [response, setResponse] = useState<ImpactResponse | null>(null);
+
+  // Session HUD numbers (mirrors the graph topbar's session line).
+  const sessionsQ = useQuery({ queryKey: ["sessions"], queryFn: () => api.sessions() });
+  const sessionMeta = sessionsQ.data?.sessions.find((s) => s.id === sessionId) ?? null;
 
   // Prefill from session selection if it changes (e.g. arrival from RCA view).
   useEffect(() => {
@@ -31,7 +52,7 @@ export function ImpactView({ sessionId }: { sessionId: string }) {
     onSuccess: (res) => setResponse(res),
   });
 
-  function run() {
+  function run(): void {
     const name = query.trim();
     if (!name) return;
     const body: ImpactRequest = pickedFile
@@ -46,15 +67,53 @@ export function ImpactView({ sessionId }: { sessionId: string }) {
     return `${selectedSymbol.name}@${selectedSymbol.file}:${selectedSymbol.line}`;
   }, [selectedSymbol]);
 
-  function handleSelect(node: ImpactNode) {
+  function handleSelect(node: ImpactNode): void {
     selectSymbol({ name: node.name, file: node.file, line: node.line });
   }
 
+  // Stats — derived purely from the response.
+  const stats = useMemo(() => deriveStats(response), [response]);
+  const fileCount = useMemo(
+    () => (response ? computeFileRollups(response.nodes).length : 0),
+    [response],
+  );
+
   return (
-    <div className="flex h-full flex-col">
-      {/* Top bar */}
-      <div className="flex items-center gap-3 border-b border-border bg-background px-4 py-2 text-sm">
+    <div className="impact-stage">
+      {/* Topbar — Halo wordmark + tabs + session HUD (matches Graph view). */}
+      <div className="topbar">
+        <div className="brand-halo">Halo<span className="dot" /></div>
+        <div className="tabs">
+          <span>Graph</span>
+          <span>RCA</span>
+          <span className="active">Impact</span>
+        </div>
+        <div className="session">
+          {sessionMeta ? (
+            <>
+              Session <strong>{sessionMeta.id}</strong> · {sessionMeta.fileCount} files
+              {" · "}
+              {sessionMeta.symbolCount} symbols · {sessionMeta.edgeCount} edges
+            </>
+          ) : (
+            <>Session <strong>{sessionId}</strong></>
+          )}
+        </div>
+      </div>
+
+      {/* Control bar — seed + symbol picker + depth + run + stats. */}
+      <div className="controls">
+        <div className="seed">
+          <span className="lbl">Seed</span>
+          <span className="val">{response?.seed.name ?? (query.trim() || "—")}</span>
+          {response ? (
+            <span className="file">{response.seed.file}:{response.seed.line}</span>
+          ) : pickedFile ? (
+            <span className="file">{pickedFile}</span>
+          ) : null}
+        </div>
         <SymbolSearch
+          variant="observatory"
           sessionId={sessionId}
           value={query}
           onChange={(v) => {
@@ -66,8 +125,9 @@ export function ImpactView({ sessionId }: { sessionId: string }) {
             setPickedFile(d.file);
           }}
           onSubmit={run}
+          placeholder="search symbol…"
         />
-        <label className="flex items-center gap-2 text-muted-foreground">
+        <label className="depth">
           <span>depth</span>
           <input
             type="range"
@@ -76,191 +136,133 @@ export function ImpactView({ sessionId }: { sessionId: string }) {
             step={1}
             value={depth}
             onChange={(e) => setDepth(Number(e.target.value))}
-            className="w-32"
           />
-          <span className="w-4 text-right font-mono text-foreground">{depth}</span>
+          <span className="v">{depth}</span>
         </label>
         <button
           type="button"
+          className="run-btn"
           onClick={run}
           disabled={mutation.isPending || !query.trim()}
-          className={cn(
-            "rounded bg-accent px-3 py-1 text-accent-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50",
-          )}
         >
           {mutation.isPending ? "Running…" : "Run impact"}
         </button>
-        {pickedFile && (
-          <span className="truncate text-xs text-muted-foreground" title={pickedFile}>
-            in {pickedFile}
-          </span>
-        )}
+        <div className="stats">
+          <div className={`stat ${riskTone(stats.maxRisk)}`}>
+            <span className="v">{stats.maxRisk.toFixed(2)}</span>
+            <span className="l">max risk</span>
+          </div>
+          <div className="stat warn">
+            <span className="v">{stats.affected}</span>
+            <span className="l">affected</span>
+          </div>
+          <div className="stat">
+            <span className="v">{fileCount}</span>
+            <span className="l">files</span>
+          </div>
+          <div className="stat">
+            <span className="v">{stats.depth}</span>
+            <span className="l">depth</span>
+          </div>
+        </div>
       </div>
 
-      {/* Body */}
-      <div className="flex-1 overflow-hidden">
+      {/* Canvas region — single Cytoscape constellation + overlays. */}
+      <div className="canvas-region">
         {mutation.isError ? (
-          <ErrorBanner message={(mutation.error as Error)?.message ?? "Impact request failed."} />
+          <div className="impact-error">
+            {(mutation.error as Error)?.message ?? "Impact request failed."}
+          </div>
         ) : !response ? (
           <Placeholder pending={mutation.isPending} />
         ) : (
-          <Loaded
-            response={response}
-            selectedKey={selectedKey}
-            onSelect={handleSelect}
-          />
+          <>
+            <ImpactCanvas
+              response={response}
+              onSelect={handleSelect}
+              selectedKey={selectedKey}
+            />
+            <SummaryProse response={response} fileCount={fileCount} />
+            <FileBlastRadius nodes={response.nodes} onFocus={handleSelect} />
+          </>
         )}
+      </div>
+
+      {/* Bottom legend. */}
+      <div className="impact-legend">
+        <span className="seg"><span className="swatch" style={{ background: "#ff5c6a" }} />seed</span>
+        <span className="seg"><span className="swatch" style={{ background: "#ff5c6a" }} />risk ≥ 0.75</span>
+        <span className="seg"><span className="swatch" style={{ background: "#ffb547" }} />0.5–0.74</span>
+        <span className="seg"><span className="swatch" style={{ background: "#5cd5ff" }} />&lt; 0.5</span>
+        <span className="seg">file = nebula · ring = test coverage</span>
+        <span className="seg" style={{ marginLeft: "auto", color: "rgba(245,245,245,0.18)" }}>
+          click a node · selection syncs to RCA / Graph
+        </span>
       </div>
     </div>
   );
 }
 
-function Loaded({
+interface Stats {
+  maxRisk: number;
+  affected: number;
+  depth: number;
+}
+
+function deriveStats(r: ImpactResponse | null): Stats {
+  if (!r) return { maxRisk: 0, affected: 0, depth: 0 };
+  let maxDepth = 0;
+  for (const n of r.nodes) {
+    if (n.distance > maxDepth) maxDepth = n.distance;
+  }
+  return { maxRisk: r.maxRisk, affected: r.nodes.length, depth: maxDepth };
+}
+
+function riskTone(r: number): "hot" | "warn" | "cool" {
+  if (r >= 0.75) return "hot";
+  if (r >= 0.5) return "warn";
+  return "cool";
+}
+
+function SummaryProse({
   response,
-  selectedKey,
-  onSelect,
+  fileCount,
 }: {
   response: ImpactResponse;
-  selectedKey: string | null;
-  onSelect: (node: ImpactNode) => void;
+  fileCount: number;
 }) {
+  // Find the worst-impact file (one with the highest single-symbol risk).
+  const rollups = computeFileRollups(response.nodes);
+  const worst = rollups[0] ?? null;
   return (
-    <div className="flex h-full flex-col">
-      <div className="border-b border-border px-4 py-2">
-        <RiskSummary maxRisk={response.maxRisk} />
-        <div className="mt-1 text-xs text-muted-foreground">
-          Seed: <span className="font-mono text-foreground">{response.seed.name}</span>{" "}
-          {response.seed.file}:{response.seed.line} · {response.nodes.length} affected node(s)
-        </div>
-      </div>
-      <div className="grid flex-1 grid-cols-12 overflow-hidden">
-        <aside className="col-span-3 overflow-auto border-r border-border">
-          <SectionHeader>Tree</SectionHeader>
-          <ImpactTree root={response.tree} selectedKey={selectedKey} onSelect={onSelect} />
-        </aside>
-        <section className="col-span-5 overflow-hidden border-r border-border">
-          <SectionHeader>Graph</SectionHeader>
-          <GraphFallback nodes={response.nodes} selectedKey={selectedKey} onSelect={onSelect} />
-        </section>
-        <aside className="col-span-4 overflow-hidden">
-          <SectionHeader>Ranked by risk</SectionHeader>
-          <div className="h-[calc(100%-1.75rem)]">
-            <ImpactTable nodes={response.nodes} selectedKey={selectedKey} onSelect={onSelect} />
-          </div>
-        </aside>
-      </div>
-    </div>
-  );
-}
-
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="border-b border-border bg-muted/30 px-3 py-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-      {children}
-    </div>
-  );
-}
-
-function GraphFallback({
-  nodes,
-  selectedKey,
-  onSelect,
-}: {
-  nodes: ImpactNode[];
-  selectedKey: string | null;
-  onSelect: (node: ImpactNode) => void;
-}) {
-  // Group by hop distance for an at-a-glance forward-propagation layout.
-  const byDistance = useMemo(() => {
-    const m = new Map<number, ImpactNode[]>();
-    for (const n of nodes) {
-      const arr = m.get(n.distance) ?? [];
-      arr.push(n);
-      m.set(n.distance, arr);
-    }
-    return Array.from(m.entries()).sort((a, b) => a[0] - b[0]);
-  }, [nodes]);
-
-  return (
-    <div className="h-[calc(100%-1.75rem)] overflow-auto p-3">
-      <div className="flex flex-col gap-3">
-        {byDistance.map(([dist, group]) => (
-          <div key={dist}>
-            <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-              Hop {dist} · {group.length} node(s)
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {group
-                .slice()
-                .sort((a, b) => b.riskScore - a.riskScore)
-                .map((n, i) => {
-                  const k = nodeKey(n);
-                  const isSelected = selectedKey === k;
-                  const tested = n.testCoverage.length > 0;
-                  return (
-                    <button
-                      key={`${k}#${i}`}
-                      type="button"
-                      onClick={() => onSelect(n)}
-                      className={cn(
-                        "flex max-w-xs flex-col gap-1 rounded border border-border bg-muted/40 px-2 py-1 text-left text-xs hover:bg-muted",
-                        isSelected && "ring-2 ring-accent",
-                      )}
-                      style={{ borderLeftColor: scoreColor(n.riskScore * 10), borderLeftWidth: 4 }}
-                    >
-                      <span className="truncate font-mono text-foreground">{n.name}</span>
-                      <span className="truncate text-[10px] text-muted-foreground">
-                        {n.file}:{n.line}
-                      </span>
-                      <span className="flex items-center gap-1 text-[10px]">
-                        <span
-                          className="inline-flex h-4 min-w-9 items-center justify-center rounded px-1 font-semibold text-background"
-                          style={{ backgroundColor: scoreColor(n.riskScore * 10) }}
-                        >
-                          {n.riskScore.toFixed(2)}
-                        </span>
-                        <span className={tested ? "text-emerald-400" : "text-red-400"}>
-                          {tested ? "✓" : "✗"}
-                        </span>
-                        {n.recentChanges.length > 0 && (
-                          <span className="text-amber-400">Δ{n.recentChanges.length}</span>
-                        )}
-                      </span>
-                    </button>
-                  );
-                })}
-            </div>
-          </div>
-        ))}
-        {byDistance.length === 0 && (
-          <div className="text-xs text-muted-foreground">No nodes returned.</div>
-        )}
-      </div>
+    <div className="impact-summary">
+      Changing <span className="em">{response.seed.name}</span> propagates across{" "}
+      <span className="mono">{fileCount} files</span>
+      {worst ? (
+        <>
+          , with the worst impact landing in{" "}
+          <span className="em">{worst.basename}</span>.
+        </>
+      ) : (
+        "."
+      )}
     </div>
   );
 }
 
 function Placeholder({ pending }: { pending: boolean }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center text-muted-foreground">
-      <div className="text-sm">
+    <div className="impact-placeholder">
+      <div className="lit">
         {pending
           ? "Computing forward impact…"
-          : "Pick a symbol and depth, then run impact analysis."}
+          : "Pick a symbol, set the depth, and run impact."}
       </div>
-      <div className="max-w-md text-xs">
-        This view walks forward from a chosen symbol through its callers, scoring each one for
-        risk and overlaying test coverage and recent change history. Use it to answer
-        “if I change X, what breaks?”
+      <div className="sub">
+        Walks forward from a chosen symbol through its callers, scoring each
+        for risk and overlaying test coverage. Answers “if I change X, what
+        breaks?”
       </div>
-    </div>
-  );
-}
-
-function ErrorBanner({ message }: { message: string }) {
-  return (
-    <div className="m-4 rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-      {message}
     </div>
   );
 }

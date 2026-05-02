@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8">
+  <title>Impact · Shockwave (mockup)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /*
+     * Halo · Impact tab — direction α: Shockwave
+     * Concentric rings emanating from the changed seed at center.
+     * Hop 1 inner, hop 2 next, hop 3 outer. Risk = node color
+     * (cyan→amber→red gradient). Test coverage = green halo ring or its
+     * absence. Hover any node lights the chain back to seed.
+     * Visualizes "if I change X, how far does it reach and how bad is the
+     * worst hit?" at a single glance.
+     */
+    :root {
+      --bg-top: #0c1325;
+      --bg-bottom: #050810;
+      --ink: #f5f5f5;
+      --ink-soft: rgba(245,245,245,0.78);
+      --ink-mute: rgba(245,245,245,0.55);
+      --ink-faint: rgba(245,245,245,0.32);
+      --ink-ghost: rgba(245,245,245,0.18);
+      --halo-red: #ff5c6a;
+      --halo-amber: #ffb547;
+      --halo-cyan: #5cd5ff;
+      --halo-mint: #5dd699;
+      --rule: rgba(245,245,245,0.06);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin:0; padding:0; height:100%; background: linear-gradient(180deg,var(--bg-top) 0%, var(--bg-bottom) 100%); color: var(--ink); font-family: "Newsreader", Georgia, serif; overflow: hidden; }
+
+    body::before {
+      content:""; position: fixed; inset:0; pointer-events:none; z-index:0; opacity:.55;
+      background-image:
+        radial-gradient(1px 1px at 8% 21%, rgba(255,255,255,0.4), transparent),
+        radial-gradient(1px 1px at 67% 12%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 12% 78%, rgba(255,255,255,0.35), transparent),
+        radial-gradient(1px 1px at 88% 67%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 39% 89%, rgba(255,255,255,0.3), transparent),
+        radial-gradient(1px 1px at 53% 41%, rgba(255,255,255,0.18), transparent);
+    }
+
+    .stage { position: relative; z-index:1; height: 100vh; display: grid; grid-template-rows: 56px 48px 1fr 36px; }
+
+    .topbar { display:flex; align-items: center; padding: 0 28px; gap: 28px; border-bottom: 1px solid var(--rule); }
+    .brand { font-style: italic; font-weight:400; font-size: 22px; letter-spacing: -0.02em; }
+    .brand .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--halo-red); box-shadow: 0 0 0 3px rgba(255,92,106,.18), 0 0 14px rgba(255,92,106,.55); transform: translateY(-8px); margin-left: 4px; }
+    .tabs { display:flex; gap: 22px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .15em; text-transform: uppercase; color: var(--ink-mute); }
+    .tabs .active { color: var(--ink); }
+    .tabs .active::after { content:""; display:block; height:1px; background: var(--halo-red); margin-top: 4px; }
+    .session { margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .12em; color: var(--ink-faint); text-transform: uppercase; }
+    .session strong { color: var(--ink-soft); font-weight: 500; }
+
+    /* control bar */
+    .controls { display:flex; align-items: center; padding: 0 28px; gap: 22px; border-bottom: 1px solid var(--rule); font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-mute); letter-spacing: .04em; }
+    .controls .seed { display:flex; align-items: baseline; gap: 10px; }
+    .controls .seed .lbl { font-size: 9px; letter-spacing: .18em; color: var(--ink-faint); text-transform: uppercase; }
+    .controls .seed .val { font-size: 13px; color: var(--halo-red); font-weight: 500; }
+    .controls .seed .file { font-size: 10.5px; color: var(--ink-faint); }
+    .controls .depth { display:flex; align-items: center; gap: 10px; }
+    .controls .depth .pip { display:inline-block; width: 6px; height: 6px; border-radius: 50%; background: rgba(245,245,245,0.18); margin-right: 3px; }
+    .controls .depth .pip.on { background: var(--halo-cyan); box-shadow: 0 0 6px rgba(92,213,255,0.6); }
+    .controls .stats { margin-left: auto; display:flex; gap: 18px; }
+    .controls .stats .stat .v { font-family: "JetBrains Mono", monospace; font-size: 14px; color: var(--ink); font-weight: 500; }
+    .controls .stats .stat .l { font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: .14em; text-transform: uppercase; margin-left: 6px; }
+    .controls .stats .stat.hot .v { color: var(--halo-red); }
+    .controls .stats .stat.warn .v { color: var(--halo-amber); }
+
+    /* canvas */
+    .canvas { position: relative; overflow: hidden; }
+    .chart-svg { width: 100%; height: 100%; display: block; }
+    .summary { position: absolute; left: 28px; top: 24px; max-width: 320px; }
+    .summary .lit { font-style: italic; font-size: 14.5px; line-height: 1.55; color: var(--ink-soft); font-weight: 300; }
+    .summary .lit .em { color: var(--halo-red); font-weight: 500; }
+    .summary .lit .mono { font-family: "JetBrains Mono", monospace; font-style: normal; font-size: 12px; color: var(--ink-mute); }
+
+    /* hover-card preview (showing for one node "ensureIndex") */
+    .hover-card { position: absolute; right: 28px; top: 24px; width: 290px; background: rgba(12,19,37,0.78); border: 1px solid rgba(92,213,255,0.32); backdrop-filter: blur(8px); padding: 14px 16px; }
+    .hover-card .name { font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--ink); font-weight: 500; }
+    .hover-card .file { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--ink-mute); margin-top: 3px; }
+    .hover-card .row { display:flex; gap: 12px; margin-top: 12px; align-items: baseline; }
+    .hover-card .risk { font-family: "Newsreader", serif; font-style: italic; font-size: 28px; line-height: 1; color: var(--halo-amber); letter-spacing: -0.02em; }
+    .hover-card .risk-label { font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: .14em; text-transform: uppercase; }
+    .hover-card .meta { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule); display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-family: "JetBrains Mono", monospace; font-size: 10.5px; }
+    .hover-card .meta .k { color: var(--ink-faint); letter-spacing: .08em; text-transform: uppercase; font-size: 9px; }
+    .hover-card .meta .v { color: var(--ink-soft); }
+    .hover-card .chain { margin-top: 10px; font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-mute); }
+    .hover-card .chain .arrow { color: var(--halo-cyan); margin: 0 4px; }
+
+    /* ring labels */
+    .ring-label { font-family: "JetBrains Mono"; font-size: 10px; fill: rgba(245,245,245,0.32); letter-spacing: .14em; text-transform: uppercase; }
+
+    /* bottom legend */
+    .bottom-bar { display: flex; align-items: center; padding: 0 28px; border-top: 1px solid var(--rule); font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .12em; color: var(--ink-faint); text-transform: uppercase; }
+    .bottom-bar .seg { margin-right: 24px; display:flex; align-items:center; gap: 6px; }
+    .bottom-bar .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+    .bottom-bar .ring-swatch { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--halo-mint); background: transparent; }
+  </style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="topbar">
+    <div class="brand">Halo<span class="dot"></span></div>
+    <div class="tabs">
+      <span>Graph</span>
+      <span>RCA</span>
+      <span class="active">Impact</span>
+    </div>
+    <div class="session">
+      Session <strong>self-rca</strong> · 21 files · 312 symbols · 1458 edges · v0.4.1
+    </div>
+  </div>
+
+  <!-- controls bar -->
+  <div class="controls">
+    <div class="seed">
+      <span class="lbl">Seed</span>
+      <span class="val">indexScope</span>
+      <span class="file">orchestrator.ts:91</span>
+    </div>
+    <div class="depth">
+      <span style="color:var(--ink-faint);font-size:9px;letter-spacing:.18em;text-transform:uppercase">depth</span>
+      <span><span class="pip on"></span><span class="pip on"></span><span class="pip on"></span><span class="pip"></span><span class="pip"></span></span>
+      <span style="color:var(--ink);font-size:11px">3</span>
+    </div>
+    <div class="stats">
+      <div class="stat hot"><span class="v">0.85</span><span class="l">max risk</span></div>
+      <div class="stat warn"><span class="v">14</span><span class="l">affected</span></div>
+      <div class="stat"><span class="v">9</span><span class="l">tested</span></div>
+      <div class="stat"><span class="v">5</span><span class="l">untested</span></div>
+    </div>
+  </div>
+
+  <!-- shockwave canvas -->
+  <div class="canvas">
+    <div class="summary">
+      <div class="lit">
+        Changing <span class="em">indexScope</span> reaches <span class="mono">14</span> symbols
+        across <span class="mono">3</span> hops. Worst-case impact is the
+        MCP <span class="em">ensureIndex</span> path — production users hit it on every
+        editor query.
+      </div>
+    </div>
+
+    <!-- hover card preview -->
+    <div class="hover-card">
+      <div class="name">ensureIndex</div>
+      <div class="file">mcp/server.ts:122</div>
+      <div class="row">
+        <div class="risk">0.85</div>
+        <div>
+          <div class="risk-label">risk score</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--halo-mint);margin-top:4px">tested · 3 mcp tests</div>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="k">Hop</span><span class="v">1</span>
+        <span class="k">Recent</span><span class="v">2 commits · last 1d</span>
+        <span class="k">LOC</span><span class="v">38</span>
+        <span class="k">Subsystem</span><span class="v">mcp</span>
+      </div>
+      <div class="chain">
+        <span style="color:var(--halo-red)">indexScope</span>
+        <span class="arrow">↗</span>
+        <span style="color:var(--halo-amber)">ensureIndex</span>
+      </div>
+    </div>
+
+    <!-- the shockwave -->
+    <svg class="chart-svg" viewBox="0 0 1200 660" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <radialGradient id="seed-burst">
+          <stop offset="0%" stop-color="rgba(255,92,106,0.85)"/>
+          <stop offset="40%" stop-color="rgba(255,92,106,0.32)"/>
+          <stop offset="80%" stop-color="rgba(255,92,106,0.06)"/>
+          <stop offset="100%" stop-color="rgba(255,92,106,0)"/>
+        </radialGradient>
+        <radialGradient id="hop1-glow">
+          <stop offset="0%" stop-color="rgba(255,181,71,0.22)"/>
+          <stop offset="100%" stop-color="rgba(255,181,71,0)"/>
+        </radialGradient>
+      </defs>
+
+      <!-- shockwave halo -->
+      <circle cx="600" cy="330" r="320" fill="url(#hop1-glow)" opacity="0.4"/>
+
+      <!-- ring guides (very faint) -->
+      <g fill="none" stroke="rgba(245,245,245,0.06)" stroke-width="1">
+        <circle cx="600" cy="330" r="120"/>
+        <circle cx="600" cy="330" r="220"/>
+        <circle cx="600" cy="330" r="300"/>
+      </g>
+
+      <!-- ring labels -->
+      <text x="600" y="195" class="ring-label" text-anchor="middle">hop 1</text>
+      <text x="600" y="95" class="ring-label" text-anchor="middle">hop 2</text>
+      <text x="600" y="14" class="ring-label" text-anchor="middle">hop 3</text>
+
+      <!-- chain edges to seed (hop1 → seed) -->
+      <g stroke="rgba(122,168,255,0.22)" stroke-width="1" fill="none">
+        <line x1="600" y1="330" x2="494" y2="271"/>      <!-- → cmdIndex -->
+        <line x1="600" y1="330" x2="676" y2="225"/>      <!-- → ensureIndex -->
+        <line x1="600" y1="330" x2="772" y2="296"/>      <!-- → cmdRca (via runRca) -->
+        <line x1="600" y1="330" x2="745" y2="397"/>      <!-- → cmdDefine -->
+        <line x1="600" y1="330" x2="635" y2="445"/>      <!-- → cmdCallers -->
+        <line x1="600" y1="330" x2="510" y2="430"/>      <!-- → cmdCallees -->
+        <line x1="600" y1="330" x2="450" y2="364"/>      <!-- → cmdChanged -->
+      </g>
+      <!-- highlighted chain to ensureIndex -->
+      <g stroke="rgba(255,181,71,0.78)" stroke-width="1.8" fill="none">
+        <line x1="600" y1="330" x2="676" y2="225"/>
+      </g>
+
+      <!-- hop 2 edges -->
+      <g stroke="rgba(122,168,255,0.16)" stroke-width="1" fill="none">
+        <line x1="494" y1="271" x2="426" y2="183"/>      <!-- cmdIndex → parseArgs -->
+        <line x1="494" y1="271" x2="345" y2="223"/>
+        <line x1="676" y1="225" x2="710" y2="123"/>      <!-- ensureIndex → mcpHandler -->
+        <line x1="676" y1="225" x2="800" y2="130"/>
+        <line x1="772" y1="296" x2="850" y2="195"/>
+        <line x1="745" y1="397" x2="888" y2="375"/>
+      </g>
+
+      <!-- hop 3 edges -->
+      <g stroke="rgba(122,168,255,0.10)" stroke-width="1" fill="none">
+        <line x1="426" y1="183" x2="385" y2="48"/>
+        <line x1="710" y1="123" x2="800" y2="38"/>
+        <line x1="850" y1="195" x2="930" y2="65"/>
+      </g>
+
+      <!-- ============ SEED (indexScope) ============ -->
+      <circle cx="600" cy="330" r="80" fill="url(#seed-burst)"/>
+      <g stroke="#ff5c6a" stroke-opacity="0.78" stroke-width="0.9" stroke-linecap="round">
+        <line x1="600" y1="278" x2="600" y2="382"/>
+        <line x1="548" y1="330" x2="652" y2="330"/>
+      </g>
+      <g fill="none" stroke="#ff5c6a">
+        <circle cx="600" cy="330" r="14" stroke-opacity="0.85" stroke-width="1.5"/>
+        <circle cx="600" cy="330" r="22" stroke-opacity="0.4"/>
+      </g>
+      <circle cx="600" cy="330" r="7" fill="#ff5c6a"/>
+      <text x="600" y="370" font-family="JetBrains Mono" font-size="13" fill="#ff5c6a" font-weight="500" text-anchor="middle">indexScope</text>
+      <text x="600" y="385" font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.55)" text-anchor="middle">orchestrator.ts:91</text>
+
+      <!-- ============ HOP 1 ============ -->
+      <!-- ensureIndex (highlighted, risk 0.85, tested) -->
+      <g>
+        <circle cx="676" cy="225" r="22" fill="rgba(255,181,71,0.12)"/>
+        <circle cx="676" cy="225" r="14" fill="none" stroke="#5dd699" stroke-width="1.5" stroke-opacity="0.85"/>
+        <circle cx="676" cy="225" r="6" fill="#ffb547"/>
+        <text x="694" y="220" font-family="JetBrains Mono" font-size="12" fill="rgba(245,245,245,0.95)" font-weight="500">ensureIndex</text>
+        <text x="694" y="234" font-family="JetBrains Mono" font-size="10" fill="rgba(255,181,71,0.85)">0.85 · ✓</text>
+      </g>
+
+      <!-- cmdIndex (risk 0.5, untested) -->
+      <g>
+        <circle cx="494" cy="271" r="14" fill="none" stroke="rgba(255,92,106,0.32)" stroke-width="1.5" stroke-dasharray="2 2"/>
+        <circle cx="494" cy="271" r="5" fill="#5cd5ff"/>
+        <text x="478" y="262" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.78)" text-anchor="end">cmdIndex</text>
+        <text x="478" y="276" font-family="JetBrains Mono" font-size="9.5" fill="rgba(245,245,245,0.45)" text-anchor="end">0.50 · ✗</text>
+      </g>
+
+      <!-- runRca (risk 0.7, tested) - via cmdRca path -->
+      <g>
+        <circle cx="772" cy="296" r="16" fill="none" stroke="#5dd699" stroke-width="1.5" stroke-opacity="0.85"/>
+        <circle cx="772" cy="296" r="5.5" fill="#ffb547"/>
+        <text x="790" y="291" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.85)">runRca</text>
+        <text x="790" y="305" font-family="JetBrains Mono" font-size="9.5" fill="rgba(255,181,71,0.7)">0.70 · ✓</text>
+      </g>
+
+      <!-- cmdRca (risk 0.7) -->
+      <g>
+        <circle cx="745" cy="397" r="14" fill="none" stroke="#5dd699" stroke-width="1.5" stroke-opacity="0.85"/>
+        <circle cx="745" cy="397" r="5" fill="#ffb547"/>
+        <text x="763" y="402" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.78)">cmdDefine</text>
+        <text x="763" y="416" font-family="JetBrains Mono" font-size="9.5" fill="rgba(255,181,71,0.7)">0.65 · ✓</text>
+      </g>
+
+      <!-- cmdCallers (risk 0.55) -->
+      <g>
+        <circle cx="635" cy="445" r="13" fill="none" stroke="#5dd699" stroke-width="1.5" stroke-opacity="0.7"/>
+        <circle cx="635" cy="445" r="4.5" fill="#5cd5ff"/>
+        <text x="635" y="466" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.75)" text-anchor="middle">cmdCallers</text>
+        <text x="635" y="480" font-family="JetBrains Mono" font-size="9.5" fill="rgba(245,245,245,0.45)" text-anchor="middle">0.55 · ✓</text>
+      </g>
+
+      <!-- cmdCallees (risk 0.55) -->
+      <g>
+        <circle cx="510" cy="430" r="13" fill="none" stroke="#5dd699" stroke-width="1.5" stroke-opacity="0.7"/>
+        <circle cx="510" cy="430" r="4.5" fill="#5cd5ff"/>
+        <text x="500" y="425" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.75)" text-anchor="end">cmdCallees</text>
+        <text x="500" y="439" font-family="JetBrains Mono" font-size="9.5" fill="rgba(245,245,245,0.45)" text-anchor="end">0.55 · ✓</text>
+      </g>
+
+      <!-- cmdChanged (risk 0.45) -->
+      <g>
+        <circle cx="450" cy="364" r="12" fill="none" stroke="rgba(255,92,106,0.3)" stroke-width="1.5" stroke-dasharray="2 2"/>
+        <circle cx="450" cy="364" r="4" fill="#5cd5ff"/>
+        <text x="436" y="358" font-family="JetBrains Mono" font-size="11" fill="rgba(245,245,245,0.7)" text-anchor="end">cmdChanged</text>
+        <text x="436" y="372" font-family="JetBrains Mono" font-size="9.5" fill="rgba(245,245,245,0.42)" text-anchor="end">0.45 · ✗</text>
+      </g>
+
+      <!-- ============ HOP 2 ============ -->
+      <g>
+        <!-- parseArgs (risk 0.4, tested) -->
+        <circle cx="426" cy="183" r="11" fill="none" stroke="#5dd699" stroke-width="1.2" stroke-opacity="0.6"/>
+        <circle cx="426" cy="183" r="3.5" fill="#5cd5ff" opacity="0.85"/>
+        <text x="412" y="180" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.65)" text-anchor="end">parseArgs</text>
+        <text x="412" y="194" font-family="JetBrains Mono" font-size="9" fill="rgba(245,245,245,0.4)" text-anchor="end">0.40</text>
+      </g>
+      <g>
+        <!-- repoRootFrom (risk 0.3) -->
+        <circle cx="345" cy="223" r="10" fill="none" stroke="rgba(255,92,106,0.25)" stroke-width="1.2" stroke-dasharray="2 2"/>
+        <circle cx="345" cy="223" r="3" fill="#5cd5ff" opacity="0.7"/>
+        <text x="332" y="220" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.6)" text-anchor="end">repoRootFrom</text>
+        <text x="332" y="234" font-family="JetBrains Mono" font-size="9" fill="rgba(245,245,245,0.4)" text-anchor="end">0.30 · ✗</text>
+      </g>
+      <g>
+        <!-- mcpHandler (tested, risk 0.5) -->
+        <circle cx="710" cy="123" r="11" fill="none" stroke="#5dd699" stroke-width="1.2" stroke-opacity="0.6"/>
+        <circle cx="710" cy="123" r="3.5" fill="#5cd5ff" opacity="0.85"/>
+        <text x="725" y="120" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.65)">mcpDispatch</text>
+        <text x="725" y="134" font-family="JetBrains Mono" font-size="9" fill="rgba(245,245,245,0.4)">0.50</text>
+      </g>
+      <g>
+        <!-- daemonHandlerIndex -->
+        <circle cx="800" cy="130" r="11" fill="none" stroke="#5dd699" stroke-width="1.2" stroke-opacity="0.6"/>
+        <circle cx="800" cy="130" r="3.5" fill="#5cd5ff" opacity="0.85"/>
+        <text x="816" y="127" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.65)">daemonIndex</text>
+        <text x="816" y="141" font-family="JetBrains Mono" font-size="9" fill="rgba(245,245,245,0.4)">0.50</text>
+      </g>
+      <g>
+        <!-- daemonRpc -->
+        <circle cx="850" cy="195" r="10" fill="none" stroke="#5dd699" stroke-width="1.2" stroke-opacity="0.6"/>
+        <circle cx="850" cy="195" r="3" fill="#5cd5ff" opacity="0.7"/>
+        <text x="864" y="200" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.6)">daemonRpc</text>
+      </g>
+      <g>
+        <!-- callersOf -->
+        <circle cx="888" cy="375" r="10" fill="none" stroke="#5dd699" stroke-width="1.2" stroke-opacity="0.6"/>
+        <circle cx="888" cy="375" r="3" fill="#5cd5ff" opacity="0.7"/>
+        <text x="903" y="380" font-family="JetBrains Mono" font-size="10.5" fill="rgba(245,245,245,0.6)">callersOf</text>
+      </g>
+
+      <!-- ============ HOP 3 ============ -->
+      <g>
+        <!-- main (entry) -->
+        <circle cx="385" cy="48" r="8" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.5"/>
+        <circle cx="385" cy="48" r="2.5" fill="#5cd5ff" opacity="0.6"/>
+        <text x="385" y="32" font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.5)" text-anchor="middle">main</text>
+      </g>
+      <g>
+        <circle cx="800" cy="38" r="8" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.5"/>
+        <circle cx="800" cy="38" r="2.5" fill="#5cd5ff" opacity="0.6"/>
+        <text x="800" y="22" font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.5)" text-anchor="middle">McpServer.run</text>
+      </g>
+      <g>
+        <circle cx="930" cy="65" r="8" fill="none" stroke="#5dd699" stroke-width="1" stroke-opacity="0.5"/>
+        <circle cx="930" cy="65" r="2.5" fill="#5cd5ff" opacity="0.6"/>
+        <text x="930" y="49" font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.5)" text-anchor="middle">CgrcadServer.start</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="bottom-bar">
+    <span class="seg"><span class="swatch" style="background:#ff5c6a"></span>seed</span>
+    <span class="seg"><span class="swatch" style="background:#ffb547"></span>risk ≥ 0.7</span>
+    <span class="seg"><span class="swatch" style="background:#5cd5ff"></span>risk &lt; 0.7</span>
+    <span class="seg"><span class="ring-swatch"></span>tested · solid halo</span>
+    <span class="seg"><span class="ring-swatch" style="border-color:rgba(255,92,106,0.3); border-style:dashed"></span>untested · dashed halo</span>
+    <span style="margin-left:auto;color:rgba(245,245,245,0.18)">hover a node · trace chain back to seed</span>
+  </div>
+</div>
+</body>
+</html>

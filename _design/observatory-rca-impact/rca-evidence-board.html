@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8">
+  <title>RCA · Evidence Board (mockup)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /*
+     * Halo · RCA tab — direction A: Evidence Board
+     * Keeps the 3-column shape; upgrades each panel to Observatory grade.
+     * Left = candidate dossiers (suspect cards, signal radial, italic-serif quote).
+     * Middle = Observatory graph (lit anchor + neighborhood) — cropped placeholder image.
+     * Right = code excerpt + commit timeline for the selected suspect.
+     */
+    :root {
+      --bg-top: #0c1325;
+      --bg-bottom: #050810;
+      --ink: #f5f5f5;
+      --ink-soft: rgba(245,245,245,0.78);
+      --ink-mute: rgba(245,245,245,0.55);
+      --ink-faint: rgba(245,245,245,0.32);
+      --ink-ghost: rgba(245,245,245,0.18);
+      --halo-red: #ff5c6a;
+      --halo-red-soft: #ffd1d6;
+      --node-fn: #7aa8ff;
+      --node-method: #c084fc;
+      --node-class: #ffb547;
+      --node-const: #5dd699;
+      --node-file: #5cd5ff;
+      --node-phantom: #5a5e74;
+      --edge: #7aa8ff;
+      --rule: rgba(245,245,245,0.06);
+      --pane-bg: rgba(255,255,255,0.014);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin:0; padding:0; height:100%; background: linear-gradient(180deg,var(--bg-top) 0%, var(--bg-bottom) 100%); color: var(--ink); font-family: "Newsreader", Georgia, serif; }
+    body { font-size: 14px; line-height: 1.5; }
+
+    /* faint starfield */
+    body::before {
+      content:""; position: fixed; inset:0; pointer-events:none; z-index:0; opacity:.55;
+      background-image:
+        radial-gradient(1px 1px at 8% 21%, rgba(255,255,255,0.4), transparent),
+        radial-gradient(1px 1px at 67% 12%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 12% 78%, rgba(255,255,255,0.35), transparent),
+        radial-gradient(1px 1px at 88% 67%, rgba(255,255,255,0.25), transparent),
+        radial-gradient(1px 1px at 39% 89%, rgba(255,255,255,0.3), transparent),
+        radial-gradient(1px 1px at 53% 41%, rgba(255,255,255,0.18), transparent);
+    }
+
+    .stage { position: relative; z-index:1; display: grid; grid-template-rows: 56px 1fr 36px; height: 100vh; }
+
+    /* ---------- top bar ---------- */
+    .topbar { display:flex; align-items: center; padding: 0 28px; gap: 28px; border-bottom: 1px solid var(--rule); }
+    .brand { font-style: italic; font-weight:400; font-size: 22px; letter-spacing: -0.02em; }
+    .brand .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--halo-red); box-shadow: 0 0 0 3px rgba(255,92,106,.18), 0 0 14px rgba(255,92,106,.55); transform: translateY(-8px); margin-left: 4px; }
+    .tabs { display:flex; gap: 22px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .15em; text-transform: uppercase; color: var(--ink-mute); }
+    .tabs .active { color: var(--ink); }
+    .tabs .active::after { content:""; display:block; height:1px; background: var(--halo-red); margin-top: 4px; }
+    .session { margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .12em; color: var(--ink-faint); text-transform: uppercase; }
+    .session strong { color: var(--ink-soft); font-weight: 500; }
+
+    /* ---------- main grid ---------- */
+    .main { display: grid; grid-template-columns: 360px 1fr 380px; min-height:0; }
+
+    /* ---------- left: candidate dossiers ---------- */
+    .dossiers { border-right: 1px solid var(--rule); overflow-y: auto; }
+    .dossiers-head { padding: 18px 24px 12px; }
+    .dossiers-head .label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .18em; color: var(--ink-faint); text-transform: uppercase; }
+    .dossiers-head .anchor-line { font-style: italic; color: var(--ink-soft); font-size: 18px; margin-top: 4px; line-height: 1.35; }
+    .dossiers-head .anchor-line .name { color: var(--halo-red); font-weight: 500; }
+    .dossiers-head .anchor-line .file { font-family: "JetBrains Mono", monospace; font-style: normal; font-size: 11px; color: var(--ink-faint); letter-spacing: .04em; }
+
+    .dossier { padding: 20px 24px; border-top: 1px solid var(--rule); cursor: pointer; transition: background .12s; position: relative; }
+    .dossier.selected { background: rgba(255,92,106,0.04); }
+    .dossier.selected::before { content:""; position:absolute; left:0; top:18px; bottom:18px; width:2px; background: var(--halo-red); box-shadow: 0 0 12px rgba(255,92,106,0.5); }
+
+    .dossier-head { display: flex; align-items: baseline; gap: 10px; }
+    .dossier-rank { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); letter-spacing: .08em; min-width: 14px; }
+    .dossier-name { font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--ink); font-weight: 500; }
+    .dossier-name.anchor { color: var(--halo-red); }
+    .dossier-role { margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: .14em; text-transform: uppercase; }
+
+    .dossier-loc { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); margin-top: 2px; letter-spacing: .02em; }
+
+    /* signal radial: 7 rays, length encodes per-signal score */
+    .signal-row { display:flex; align-items:center; gap:14px; margin-top: 14px; }
+    .signal-radial { width: 64px; height: 64px; flex-shrink:0; }
+    .score-block { display:flex; flex-direction:column; }
+    .score-block .num { font-family: "Newsreader", serif; font-style: italic; font-size: 36px; line-height: 1; color: var(--ink); letter-spacing: -0.02em; }
+    .score-block .num.dim { color: var(--ink-mute); }
+    .score-block .num.hot { color: var(--halo-red); }
+    .score-block .label { font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: .15em; text-transform: uppercase; margin-top: 2px; }
+
+    .rationale { margin-top: 14px; font-style: italic; font-size: 14px; line-height: 1.55; color: var(--ink-soft); font-weight: 300; padding-left: 14px; border-left: 1px solid var(--ink-ghost); }
+    .rationale .em { color: var(--ink); font-style: italic; }
+    .rationale .num { font-family: "JetBrains Mono", monospace; font-style: normal; font-size: 12px; color: var(--halo-red-soft); }
+
+    .ticker { margin-top: 12px; font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); display: flex; gap: 8px; align-items: baseline; }
+    .ticker .sha { color: var(--node-fn); }
+    .ticker .age { color: var(--ink-mute); }
+    .ticker .subj { color: var(--ink-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ---------- middle: graph viewport ---------- */
+    .graph-wrap { position: relative; overflow: hidden; }
+    .graph-svg { width: 100%; height: 100%; display: block; }
+    .graph-hud { position: absolute; left: 24px; top: 18px; max-width: 320px; }
+    .graph-hud .lit { font-style: italic; font-size: 14px; line-height: 1.5; color: var(--ink-soft); font-weight: 300; }
+    .graph-hud .lit .em { color: var(--halo-red); font-weight: 500; }
+    .graph-hud .lit .mono { font-family: "JetBrains Mono", monospace; font-style: normal; font-size: 11.5px; color: var(--ink-mute); }
+
+    .graph-legend { position: absolute; left: 24px; bottom: 20px; font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); display:flex; gap: 18px; align-items: center; letter-spacing: .08em; text-transform: uppercase; }
+    .graph-legend .swatch { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+    .graph-legend .ax { color: var(--ink-ghost); }
+
+    /* ---------- right: code + commits ---------- */
+    .right { border-left: 1px solid var(--rule); display: flex; flex-direction: column; min-height:0; }
+    .right-head { padding: 18px 24px 8px; }
+    .right-head .label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .18em; color: var(--ink-faint); text-transform: uppercase; }
+    .right-head .name { font-family: "JetBrains Mono", monospace; font-size: 16px; color: var(--ink); margin-top: 4px; font-weight: 500; }
+    .right-head .name.hot { color: var(--halo-red); }
+    .right-head .file-line { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-mute); margin-top: 4px; letter-spacing: .03em; }
+
+    .code-pane { flex: 1; overflow-y: auto; padding: 0 24px 12px; min-height: 0; }
+    .code { font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1.55; color: var(--ink-soft); white-space: pre; }
+    .code .ln { color: var(--ink-ghost); margin-right: 14px; user-select: none; display: inline-block; min-width: 24px; text-align: right; }
+    .code .lit { background: rgba(255,92,106,0.10); display: block; box-shadow: inset 2px 0 0 var(--halo-red); padding-left: 14px; margin-left: -14px; }
+    .code .kw { color: #c084fc; }
+    .code .fn { color: #7aa8ff; }
+    .code .str { color: #5dd699; }
+    .code .com { color: var(--ink-ghost); font-style: italic; }
+
+    .commits { padding: 14px 24px 22px; border-top: 1px solid var(--rule); }
+    .commits .label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .18em; color: var(--ink-faint); text-transform: uppercase; margin-bottom: 10px; }
+    .commit { display: grid; grid-template-columns: 60px 1fr 50px; gap: 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--rule); }
+    .commit:last-child { border-bottom: none; }
+    .commit .sha { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--node-fn); letter-spacing: .04em; }
+    .commit .subj { font-style: italic; font-size: 13px; color: var(--ink-soft); line-height: 1.4; }
+    .commit .age { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); text-align: right; }
+
+    /* ---------- bottom legend ---------- */
+    .bottom-bar { display: flex; align-items: center; padding: 0 28px; border-top: 1px solid var(--rule); font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .12em; color: var(--ink-faint); text-transform: uppercase; }
+    .bottom-bar .swatch { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+    .bottom-bar .seg { margin-right: 18px; }
+  </style>
+</head>
+<body>
+<div class="stage">
+
+  <!-- ------------- top bar ------------- -->
+  <div class="topbar">
+    <div class="brand">Halo<span class="dot"></span></div>
+    <div class="tabs">
+      <span>Graph</span>
+      <span class="active">RCA</span>
+      <span>Impact</span>
+    </div>
+    <div class="session">
+      Session <strong>self-rca</strong> · 21 files · 312 symbols · 1458 edges · v0.4.1
+    </div>
+  </div>
+
+  <!-- ------------- main 3-col ------------- -->
+  <div class="main">
+
+    <!-- left: dossiers -->
+    <div class="dossiers">
+      <div class="dossiers-head">
+        <div class="label">Causal candidates · 5</div>
+        <div class="anchor-line">
+          The most likely cause sits in <span class="name">runRca</span>
+          — anchor of the failure neighborhood, modified <em>0 days ago</em>
+          in commit <span class="file">7d80839</span>.
+        </div>
+      </div>
+
+      <!-- candidate 1: anchor (runRca) -->
+      <div class="dossier selected">
+        <div class="dossier-head">
+          <div class="dossier-rank">01</div>
+          <div class="dossier-name anchor">runRca</div>
+          <div class="dossier-role">Anchor</div>
+        </div>
+        <div class="dossier-loc">runner.ts:216 · 153 LOC</div>
+
+        <div class="signal-row">
+          <svg class="signal-radial" viewBox="-32 -32 64 64">
+            <!-- 7 rays, each 360/7 = 51.4° apart. length encodes signal score. -->
+            <g stroke-width="1.5" stroke-linecap="round">
+              <!-- recency 3.0/3, prox 2.5/2.5, ambig 1.5/1.5, cochange 1.0/3, subsys 0.5/0.5, complex 0.6/1.5, dataflow 0/1.5 -->
+              <line x1="0" y1="0" x2="0" y2="-26" stroke="#ff8fc4"/>           <!-- recency · top -->
+              <line x1="0" y1="0" x2="22" y2="-12" stroke="#7aa8ff"/>          <!-- proximity -->
+              <line x1="0" y1="0" x2="22" y2="12" stroke="#c084fc"/>           <!-- ambiguity -->
+              <line x1="0" y1="0" x2="6" y2="14" stroke="#ffb547"/>            <!-- co-change (low here) -->
+              <line x1="0" y1="0" x2="-7" y2="11" stroke="#5dd699"/>           <!-- subsystem -->
+              <line x1="0" y1="0" x2="-9" y2="-4" stroke="#5cd5ff"/>           <!-- complexity -->
+              <line x1="0" y1="0" x2="-1" y2="-1" stroke="#5a5e74"/>           <!-- dataflow (clipped) -->
+            </g>
+            <!-- center dot -->
+            <circle r="2" fill="#ff5c6a"/>
+            <circle r="6" fill="none" stroke="#ff5c6a" stroke-opacity=".5" stroke-width="0.8"/>
+          </svg>
+          <div class="score-block">
+            <div class="num hot">2.5</div>
+            <div class="label">score</div>
+          </div>
+        </div>
+
+        <div class="rationale">
+          <span class="em">Anchor.</span> Modified <span class="num">0d</span> ago in
+          <span class="num">7d80839</span>. <span class="num">16</span> unresolved outgoing
+          calls — likely site for dynamic-dispatch surprises.
+        </div>
+
+        <div class="ticker">
+          <span class="sha">7d80839</span>
+          <span class="age">0d</span>
+          <span class="subj">chore(release): v0.4.0 — 3 packages bumped + published</span>
+        </div>
+      </div>
+
+      <!-- candidate 2: cmdRca -->
+      <div class="dossier">
+        <div class="dossier-head">
+          <div class="dossier-rank">02</div>
+          <div class="dossier-name">cmdRca</div>
+          <div class="dossier-role">Caller · d=1</div>
+        </div>
+        <div class="dossier-loc">cli.ts:288 · 88 LOC</div>
+
+        <div class="signal-row">
+          <svg class="signal-radial" viewBox="-32 -32 64 64">
+            <g stroke-width="1.5" stroke-linecap="round">
+              <line x1="0" y1="0" x2="0" y2="-26" stroke="#ff8fc4"/>
+              <line x1="0" y1="0" x2="9" y2="-5" stroke="#7aa8ff"/>
+              <line x1="0" y1="0" x2="9" y2="5" stroke="#c084fc"/>
+              <line x1="0" y1="0" x2="6" y2="14" stroke="#ffb547"/>
+              <line x1="0" y1="0" x2="-7" y2="11" stroke="#5dd699"/>
+              <line x1="0" y1="0" x2="-6" y2="-3" stroke="#5cd5ff"/>
+              <line x1="0" y1="0" x2="-1" y2="-1" stroke="#5a5e74"/>
+            </g>
+            <circle r="1.6" fill="#7aa8ff"/>
+          </svg>
+          <div class="score-block">
+            <div class="num">1.8</div>
+            <div class="label">score</div>
+          </div>
+        </div>
+
+        <div class="rationale">
+          <span class="em">Direct caller.</span> Co-changed with the anchor in
+          <span class="num">4</span> recent commits. Touched the same week the
+          anchor was renamed.
+        </div>
+
+        <div class="ticker">
+          <span class="sha">7688da4</span>
+          <span class="age">0d</span>
+          <span class="subj">docs: v0.4.1 — README/CHANGELOG/AGENTS rewrite</span>
+        </div>
+      </div>
+
+      <!-- candidate 3: buildCausalChain -->
+      <div class="dossier">
+        <div class="dossier-head">
+          <div class="dossier-rank">03</div>
+          <div class="dossier-name">buildCausalChain</div>
+          <div class="dossier-role">Callee · d=1</div>
+        </div>
+        <div class="dossier-loc">causal.ts:189 · 461 LOC</div>
+
+        <div class="signal-row">
+          <svg class="signal-radial" viewBox="-32 -32 64 64">
+            <g stroke-width="1.5" stroke-linecap="round">
+              <line x1="0" y1="0" x2="0" y2="-26" stroke="#ff8fc4"/>
+              <line x1="0" y1="0" x2="9" y2="-5" stroke="#7aa8ff"/>
+              <line x1="0" y1="0" x2="18" y2="10" stroke="#c084fc"/>
+              <line x1="0" y1="0" x2="0" y2="0" stroke="#ffb547"/>
+              <line x1="0" y1="0" x2="-7" y2="11" stroke="#5dd699"/>
+              <line x1="0" y1="0" x2="-12" y2="-6" stroke="#5cd5ff"/>
+              <line x1="0" y1="0" x2="-1" y2="-1" stroke="#5a5e74"/>
+            </g>
+            <circle r="1.6" fill="#7aa8ff"/>
+          </svg>
+          <div class="score-block">
+            <div class="num">1.7</div>
+            <div class="label">score</div>
+          </div>
+        </div>
+
+        <div class="rationale">
+          <span class="em">Callee with <span class="num">22</span> unresolved targets</span>
+          — mostly stdlib, but the leftovers are app-level. <span class="num">461</span> LOC,
+          one of the fattest functions in the engine.
+        </div>
+
+        <div class="ticker">
+          <span class="sha">6e6b2c1</span>
+          <span class="age">1d</span>
+          <span class="subj">roadmap-10x: week 7 — receiver-types, prompt split</span>
+        </div>
+      </div>
+
+      <!-- candidate 4: formatRcaPrompt -->
+      <div class="dossier">
+        <div class="dossier-head">
+          <div class="dossier-rank">04</div>
+          <div class="dossier-name">formatRcaPrompt</div>
+          <div class="dossier-role">Callee · d=1</div>
+        </div>
+        <div class="dossier-loc">prompt.ts:42 · 198 LOC</div>
+
+        <div class="signal-row">
+          <svg class="signal-radial" viewBox="-32 -32 64 64">
+            <g stroke-width="1.5" stroke-linecap="round">
+              <line x1="0" y1="0" x2="0" y2="-18" stroke="#ff8fc4"/>
+              <line x1="0" y1="0" x2="9" y2="-5" stroke="#7aa8ff"/>
+              <line x1="0" y1="0" x2="9" y2="5" stroke="#c084fc"/>
+              <line x1="0" y1="0" x2="3" y2="7" stroke="#ffb547"/>
+              <line x1="0" y1="0" x2="-7" y2="11" stroke="#5dd699"/>
+              <line x1="0" y1="0" x2="-6" y2="-3" stroke="#5cd5ff"/>
+              <line x1="0" y1="0" x2="-1" y2="-1" stroke="#5a5e74"/>
+            </g>
+            <circle r="1.6" fill="#7aa8ff"/>
+          </svg>
+          <div class="score-block">
+            <div class="num">1.4</div>
+            <div class="label">score</div>
+          </div>
+        </div>
+
+        <div class="rationale">
+          New module, split out from runner in week 6. Has <span class="num">5</span>
+          unresolved sub-calls inside the prompt-builder loop.
+        </div>
+
+        <div class="ticker">
+          <span class="sha">cd02540</span>
+          <span class="age">1d</span>
+          <span class="subj">roadmap-10x: week 8 — Sentry surface + as_pattern</span>
+        </div>
+      </div>
+
+      <!-- candidate 5: indexScope -->
+      <div class="dossier">
+        <div class="dossier-head">
+          <div class="dossier-rank">05</div>
+          <div class="dossier-name">indexScope</div>
+          <div class="dossier-role">Callee · d=2</div>
+        </div>
+        <div class="dossier-loc">orchestrator.ts:91 · 197 LOC</div>
+
+        <div class="signal-row">
+          <svg class="signal-radial" viewBox="-32 -32 64 64">
+            <g stroke-width="1.5" stroke-linecap="round">
+              <line x1="0" y1="0" x2="0" y2="-9" stroke="#ff8fc4"/>
+              <line x1="0" y1="0" x2="4" y2="-2" stroke="#7aa8ff"/>
+              <line x1="0" y1="0" x2="18" y2="10" stroke="#c084fc"/>
+              <line x1="0" y1="0" x2="0" y2="0" stroke="#ffb547"/>
+              <line x1="0" y1="0" x2="0" y2="0" stroke="#5dd699"/>
+              <line x1="0" y1="0" x2="-13" y2="-6" stroke="#5cd5ff"/>
+              <line x1="0" y1="0" x2="-1" y2="-1" stroke="#5a5e74"/>
+            </g>
+            <circle r="1.4" fill="#7aa8ff" opacity=".82"/>
+          </svg>
+          <div class="score-block">
+            <div class="num dim">1.2</div>
+            <div class="label">score</div>
+          </div>
+        </div>
+
+        <div class="rationale">
+          Two-hop callee. <span class="num">197</span> LOC. Just hit by the FK-cascade fix
+          and blob-cache wiring this week — exit gradient.
+        </div>
+
+        <div class="ticker">
+          <span class="sha">5a0429c</span>
+          <span class="age">3d</span>
+          <span class="subj">roadmap-10x: week 5 — FK-cascade + locals + receiver</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- middle: Observatory graph -->
+    <div class="graph-wrap">
+      <div class="graph-hud">
+        <div class="lit">
+          The most likely cause sits in <span class="em">runRca</span> —
+          <br>
+          anchor of the failure neighborhood, modified
+          <span class="mono">0 days ago</span> in commit
+          <span class="mono">7d80839</span>, with <span class="mono">2 directly co-changed callees</span>.
+        </div>
+      </div>
+
+      <!-- compact constellation: anchor + 4 file clusters with stars -->
+      <svg class="graph-svg" viewBox="0 0 720 540" preserveAspectRatio="xMidYMid meet">
+        <!-- nebula gradients -->
+        <defs>
+          <radialGradient id="neb-runner">
+            <stop offset="0%" stop-color="hsla(240,80%,50%,0.55)"/>
+            <stop offset="60%" stop-color="hsla(240,70%,35%,0.14)"/>
+            <stop offset="100%" stop-color="hsla(240,80%,30%,0)"/>
+          </radialGradient>
+          <radialGradient id="neb-causal">
+            <stop offset="0%" stop-color="hsla(280,80%,50%,0.55)"/>
+            <stop offset="60%" stop-color="hsla(280,70%,35%,0.14)"/>
+            <stop offset="100%" stop-color="hsla(280,80%,30%,0)"/>
+          </radialGradient>
+          <radialGradient id="neb-cli">
+            <stop offset="0%" stop-color="hsla(150,80%,50%,0.45)"/>
+            <stop offset="60%" stop-color="hsla(150,70%,35%,0.12)"/>
+            <stop offset="100%" stop-color="hsla(150,80%,30%,0)"/>
+          </radialGradient>
+          <radialGradient id="neb-orch">
+            <stop offset="0%" stop-color="hsla(30,80%,50%,0.42)"/>
+            <stop offset="60%" stop-color="hsla(30,70%,35%,0.11)"/>
+            <stop offset="100%" stop-color="hsla(30,80%,30%,0)"/>
+          </radialGradient>
+          <radialGradient id="anchor-flare">
+            <stop offset="0%" stop-color="rgba(255,92,106,0.8)"/>
+            <stop offset="35%" stop-color="rgba(255,92,106,0.32)"/>
+            <stop offset="70%" stop-color="rgba(255,92,106,0.08)"/>
+            <stop offset="100%" stop-color="rgba(255,92,106,0)"/>
+          </radialGradient>
+        </defs>
+
+        <!-- nebulas -->
+        <circle cx="360" cy="270" r="170" fill="url(#neb-runner)"/>
+        <circle cx="540" cy="200" r="120" fill="url(#neb-causal)"/>
+        <circle cx="180" cy="160" r="110" fill="url(#neb-cli)"/>
+        <circle cx="180" cy="400" r="120" fill="url(#neb-orch)"/>
+
+        <!-- nebula labels (italic serif, low opacity) -->
+        <g font-family="Newsreader" font-style="italic" font-size="14" fill="rgba(245,245,245,0.42)">
+          <text x="360" y="115" text-anchor="middle">runner.ts</text>
+          <text x="540" y="115" text-anchor="middle">causal.ts</text>
+          <text x="180" y="80" text-anchor="middle">cli.ts</text>
+          <text x="180" y="495" text-anchor="middle">orchestrator.ts</text>
+          <text x="600" y="380" text-anchor="middle">prompt.ts</text>
+        </g>
+
+        <!-- edges (solid for resolved, dashed for confidence 0.7) -->
+        <g stroke="#7aa8ff" stroke-opacity="0.42" stroke-width="1" fill="none">
+          <line x1="360" y1="270" x2="540" y2="200"/>             <!-- → buildCausalChain -->
+          <line x1="360" y1="270" x2="180" y2="160"/>             <!-- ← cmdRca -->
+          <line x1="360" y1="270" x2="180" y2="400"/>             <!-- → indexScope -->
+          <line x1="360" y1="270" x2="580" y2="370"/>             <!-- → formatRcaPrompt -->
+          <line x1="540" y1="200" x2="495" y2="220" stroke-dasharray="3 3"/>
+          <line x1="540" y1="200" x2="585" y2="220" stroke-dasharray="3 3"/>
+          <!-- lit edges from anchor (red) -->
+          <line x1="360" y1="270" x2="540" y2="200" stroke="#ff5c6a" stroke-opacity="0.32" stroke-width="1.5"/>
+          <line x1="360" y1="270" x2="180" y2="160" stroke="#ff5c6a" stroke-opacity="0.32" stroke-width="1.5"/>
+        </g>
+
+        <!-- anchor lens flare -->
+        <circle cx="360" cy="270" r="80" fill="url(#anchor-flare)"/>
+        <!-- 4-cross flare cardinals -->
+        <g stroke="#ff5c6a" stroke-opacity="0.7" stroke-width="0.8" stroke-linecap="round">
+          <line x1="360" y1="220" x2="360" y2="320"/>
+          <line x1="310" y1="270" x2="410" y2="270"/>
+        </g>
+        <g stroke="#ff5c6a" stroke-opacity="0.32" stroke-width="0.6" stroke-linecap="round">
+          <line x1="328" y1="238" x2="392" y2="302"/>
+          <line x1="392" y1="238" x2="328" y2="302"/>
+        </g>
+
+        <!-- anchor rings -->
+        <g fill="none" stroke="#ff5c6a">
+          <circle cx="360" cy="270" r="10" stroke-opacity="0.85" stroke-width="1.5"/>
+          <circle cx="360" cy="270" r="18" stroke-opacity="0.4"/>
+          <circle cx="360" cy="270" r="28" stroke-opacity="0.18"/>
+        </g>
+
+        <!-- nodes -->
+        <g>
+          <!-- anchor -->
+          <circle cx="360" cy="270" r="6" fill="#ff5c6a"/>
+          <!-- runner.ts cluster around anchor -->
+          <circle cx="328" cy="252" r="3.5" fill="#7aa8ff"/>
+          <circle cx="396" cy="284" r="3.5" fill="#7aa8ff"/>
+          <circle cx="370" cy="305" r="3" fill="#7aa8ff"/>
+          <circle cx="335" cy="288" r="3" fill="#5dd699"/>
+
+          <!-- causal.ts cluster -->
+          <circle cx="540" cy="200" r="5.5" fill="#7aa8ff"/>     <!-- buildCausalChain -->
+          <circle cx="495" cy="220" r="3" fill="#7aa8ff"/>
+          <circle cx="585" cy="220" r="3" fill="#7aa8ff"/>
+          <circle cx="558" cy="170" r="3" fill="#c084fc"/>
+          <circle cx="510" cy="180" r="3" fill="#5dd699"/>
+          <circle cx="600" cy="190" r="2.5" fill="#5a5e74"/>
+
+          <!-- cli.ts cluster -->
+          <circle cx="180" cy="160" r="4.5" fill="#7aa8ff"/>     <!-- cmdRca -->
+          <circle cx="155" cy="180" r="3" fill="#7aa8ff"/>
+          <circle cx="205" cy="170" r="3" fill="#7aa8ff"/>
+          <circle cx="178" cy="195" r="2.8" fill="#c084fc"/>
+
+          <!-- orchestrator.ts cluster -->
+          <circle cx="180" cy="400" r="4" fill="#7aa8ff"/>       <!-- indexScope -->
+          <circle cx="160" cy="380" r="2.8" fill="#7aa8ff"/>
+          <circle cx="200" cy="425" r="2.8" fill="#7aa8ff"/>
+          <circle cx="155" cy="420" r="2.8" fill="#5a5e74"/>
+
+          <!-- prompt.ts cluster -->
+          <circle cx="580" cy="370" r="4" fill="#7aa8ff"/>       <!-- formatRcaPrompt -->
+          <circle cx="610" cy="395" r="2.5" fill="#7aa8ff"/>
+        </g>
+
+        <!-- star labels (smart-labels style) -->
+        <g font-family="JetBrains Mono" font-size="10" fill="rgba(245,245,245,0.78)">
+          <text x="375" y="262" font-weight="500" fill="#ff5c6a">runRca</text>
+          <text x="555" y="194">buildCausalChain</text>
+          <text x="195" y="156">cmdRca</text>
+          <text x="195" y="396">indexScope</text>
+          <text x="595" y="365">formatRcaPrompt</text>
+        </g>
+      </svg>
+
+      <div class="graph-legend">
+        <span><span class="swatch" style="background:#7aa8ff"></span>function</span>
+        <span><span class="swatch" style="background:#c084fc"></span>method</span>
+        <span><span class="swatch" style="background:#5dd699"></span>const</span>
+        <span><span class="swatch" style="background:#ff8fc4"></span>type</span>
+        <span><span class="swatch" style="background:#ff5c6a"></span>anchor</span>
+        <span class="ax">edges — solid 1.0 · dashed 0.7 · dotted 0.5</span>
+      </div>
+    </div>
+
+    <!-- right: code excerpt + commits -->
+    <div class="right">
+      <div class="right-head">
+        <div class="label">Inspect · evidence</div>
+        <div class="name hot">runRca</div>
+        <div class="file-line">packages/core/src/rca/runner.ts:216-368</div>
+      </div>
+
+      <div class="code-pane">
+        <pre class="code"><span class="ln">214</span><span class="com">/** Top-level RCA. Resolves scope, indexes, ranks candidates. */</span>
+<span class="ln">215</span>
+<span class="ln">216</span><span class="kw">export async function</span> <span class="fn">runRca</span>(req: RcaRequest): Promise&lt;RcaResult&gt; {
+<span class="ln">217</span>  <span class="kw">const</span> { failure, repoRoot, format = <span class="str">"prompt"</span> } = req;
+<span class="ln">218</span>  <span class="kw">const</span> scope = <span class="kw">await</span> <span class="fn">resolveScope</span>(failure, repoRoot, req);
+<span class="ln">219</span>  <span class="kw">const</span> { db, fileCount, symbolCount, edgeCount } =
+<span class="ln">220</span>    <span class="kw">await</span> <span class="fn">indexScope</span>({ repoRoot, ...scope });
+<span class="ln">221</span><span class="lit"><span class="ln">221</span>  <span class="kw">const</span> primary = <span class="fn">resolvePrimarySymbol</span>(db, failure);</span>
+<span class="ln">222</span><span class="lit"><span class="ln">222</span>  <span class="kw">if</span> (!primary) {</span>
+<span class="ln">223</span><span class="lit"><span class="ln">223</span>    <span class="kw">return</span> <span class="fn">emptyResult</span>(req, scope, fileCount, symbolCount, edgeCount);</span>
+<span class="ln">224</span><span class="lit"><span class="ln">224</span>  }</span>
+<span class="ln">225</span>  <span class="kw">const</span> callerTree = <span class="kw">await</span> <span class="fn">callersOf</span>(db, primary.name, { depth: <span class="str">2</span> });
+<span class="ln">226</span>  <span class="kw">const</span> calleeTree = <span class="kw">await</span> <span class="fn">calleesOf</span>(db, primary.name, { depth: <span class="str">1</span> });
+<span class="ln">227</span>  <span class="kw">const</span> hydrated = <span class="kw">await</span> <span class="fn">hydrateRecency</span>(db, [callerTree, calleeTree], req);
+<span class="ln">228</span>  <span class="kw">const</span> candidates = <span class="fn">buildCausalChain</span>({
+<span class="ln">229</span>    anchor: { name: primary.name, file: primary.file, line: primary.line },</pre>
+      </div>
+
+      <div class="commits">
+        <div class="label">Recent commits in scope · 3</div>
+        <div class="commit">
+          <span class="sha">7d80839</span>
+          <span class="subj">chore(release): v0.4.0 — 3 packages bumped + published</span>
+          <span class="age">0d</span>
+        </div>
+        <div class="commit">
+          <span class="sha">7688da4</span>
+          <span class="subj">docs: v0.4.1 — full README/CHANGELOG/AGENTS rewrite</span>
+          <span class="age">0d</span>
+        </div>
+        <div class="commit">
+          <span class="sha">6e6b2c1</span>
+          <span class="subj">roadmap-10x: week 7 — Python receiver-types, prompt split</span>
+          <span class="age">1d</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- bottom legend bar -->
+  <div class="bottom-bar">
+    <span class="seg"><span class="swatch" style="background:#ff8fc4"></span>recency</span>
+    <span class="seg"><span class="swatch" style="background:#7aa8ff"></span>proximity</span>
+    <span class="seg"><span class="swatch" style="background:#c084fc"></span>ambiguity</span>
+    <span class="seg"><span class="swatch" style="background:#ffb547"></span>co-change</span>
+    <span class="seg"><span class="swatch" style="background:#5dd699"></span>subsystem</span>
+    <span class="seg"><span class="swatch" style="background:#5cd5ff"></span>complexity</span>
+    <span class="seg"><span class="swatch" style="background:#5a5e74"></span>data-flow</span>
+    <span style="margin-left:auto;color:rgba(245,245,245,0.18)">7-signal radial · ray length = score</span>
+  </div>
+</div>
+</body>
+</html>
