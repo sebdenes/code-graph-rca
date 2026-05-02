@@ -116,6 +116,7 @@ describe("mcp server: stdio round-trip", () => {
       expect(names).toContain("cgrca_recentlyChangedNear");
       expect(names).toContain("cgrca_rca");
       expect(names).toContain("cgrca_rcaPrompt");
+      expect(names).toContain("cgrca_rcaWithReasoning");
       expect(names).toContain("cgrca_scope");
 
       const callRes = await client.request("tools/call", {
