@@ -13,7 +13,7 @@
  *   we render a quiet placeholder citing the file:line so the user can grep
  *   themselves. We never invent fake source.
  */
-import { useMemo } from "react";
+import { useMemo, type JSX } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { CausalCandidate } from "code-graph-rca";
 import type { SourceResponse } from "@shared/api";

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, type JSX } from "react";
 import Editor from "@monaco-editor/react";
 import { useQueries } from "@tanstack/react-query";
 import type { editor } from "monaco-editor";
