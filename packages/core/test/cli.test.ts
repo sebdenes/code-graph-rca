@@ -125,7 +125,7 @@ describe("cli smoke", () => {
 
       // Warm: reuse the persisted graph. The wall clock includes npx/tsx
       // boot, so the bound is loose; but if --persist reuse regresses,
-      // this re-indexes and athlai-scale repos blow well past 500ms.
+      // this re-indexes and large-scale repos blow well past 500ms.
       const t0 = Date.now();
       const warm = run(["define", "login", "--repo", TS_FIXTURE, "--persist", sqlitePath]);
       const elapsed = Date.now() - t0;

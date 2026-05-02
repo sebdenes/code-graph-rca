@@ -21,53 +21,75 @@ export function renderAgentsMd(opts: AgentsMdOptions): string {
   const { repoName } = opts;
   return `# AGENTS.md
 
-This repo ships with **cgrca** — a code knowledge graph plus an RCA
-engine. Use it whenever you investigate a bug, plan a fix, or estimate
-the blast radius of a change.
+This repo ships with **cgrca** — a code knowledge graph + RCA engine.
+Use it whenever you investigate a bug, plan a fix, or estimate the
+blast radius of a change.
 
-## When to use cgrca
+## Budget
 
-- **Bug investigation.** Before reading code, call \`cgrca_rcaPrompt\`
-  with the failure (a stack trace, a failing test path, a symbol name,
-  or a file path). It returns a structured prompt with ranked causal
-  candidates, a first-hypothesis sentence, the graph context, and the
-  seven-step RCA protocol. Treat that prompt as your primary substrate.
-- **"What calls this?" / "What does this call?"** Use \`cgrca_callersOf\`
-  and \`cgrca_calleesOf\` instead of grep when you want a typed,
-  confidence-weighted answer.
-- **Before changing a function signature.** Use \`cgrca_callersOf\` at
-  depth 3 to enumerate every caller. Test coverage and risk show up
-  via \`cgrca_recentlyChangedNear\` and the unresolved-call hints in
-  the result.
-- **Cross-file reasoning.** Use \`cgrca_definitionOf\` to find every
-  declaration of a symbol — language and subsystem filters available.
+**Don't call more than 3 cgrca tools per investigation.** The ranked
+output of \`cgrca_rca\` already collapses what would otherwise be a
+walk of callers / callees / changed / definitions. Start there.
+
+## When to call which
+
+1. **Bug investigation — start here.** Call \`cgrca_rca\` with the
+   failure (stack trace, failing-test path, symbol, or file). It
+   returns ranked causal candidates with role, location, and a
+   one-line rationale. Read the top 3. If you need the full
+   markdown grounding prompt instead of structured JSON, call
+   \`cgrca_rcaPrompt\`.
+2. **Targeted lookup — second pass.** Use \`cgrca_definitionOf\` to
+   find every declaration of a symbol; \`cgrca_callersOf\` /
+   \`cgrca_calleesOf\` for typed, confidence-weighted call trees;
+   \`cgrca_recentlyChangedNear\` for git-log of a symbol's lines.
+3. **Before a signature change.** \`cgrca_callersOf\` at depth 3
+   enumerates every caller; the unresolved-call hints flag dynamic
+   dispatch you can't see from grep.
+4. **Sanity-check coverage.** \`cgrca_scope\` is a free dry-run that
+   tells you which files cgrca would index for a given failure.
 
 ## Tools
 
-- \`cgrca_rca\` — full RCA, returns ranked candidates JSON.
-- \`cgrca_rcaPrompt\` — same, returns ONLY the assembled prompt as text.
+- \`cgrca_rca\` — ranked causal candidates as structured JSON.
+- \`cgrca_rcaPrompt\` — same, returns ONLY the assembled markdown prompt.
 - \`cgrca_definitionOf\` — find symbol declarations.
 - \`cgrca_callersOf\` — reverse call tree (depth 1–5, default 2).
 - \`cgrca_calleesOf\` — forward call tree (depth 1–4, default 1).
 - \`cgrca_symbolsInFile\` — every symbol in a file, source order.
 - \`cgrca_recentlyChangedNear\` — git log -L for a symbol's lines.
 - \`cgrca_scope\` — dry-run preview of which files cgrca would index.
+- \`cgrca_currentSelection\` / \`cgrca_publishSelection\` — bridge to a
+  running \`cgrca-view\` UI; degrade to \`{ none: true }\` when no UI is up.
+
+## Daemon
+
+If \`cgrcad\` is running, queries are ~500x warm — they reuse a
+persisted SQLite per repo, with fs-watch invalidation. Initialize
+it once per session and forget about it:
+
+\`\`\`sh
+cgrca daemon start    # background; idempotent
+cgrca daemon status   # check
+\`\`\`
+
+The MCP server transparently routes through the daemon when it's
+up. No tool-call changes needed.
 
 ## Honest fallbacks
 
-cgrca returns confidence-graded edges. **Confidence 1.0** means resolved
-exactly. **0.7** means the receiver type was ambiguous (e.g. \`self.foo()\`
-with multiple possible matches). **0.5** means unresolved — the call
-target is dynamic, a builtin, or a module we couldn't trace. Unresolved
-edges still carry the \`to_name\` — that's grep-bait for you. Don't drop
-them; they're often the most informative part of the graph.
+cgrca returns confidence-graded edges. **1.0** = resolved exactly.
+**0.7** = ambiguous receiver (e.g. \`self.foo()\` with multiple
+matches). **0.5** = unresolved — call target is dynamic, builtin,
+or untraced; the \`to_name\` is preserved as grep-bait. Don't drop
+unresolved edges; they're often the most informative.
 
 ## Project notes
 
 - Repo: \`${repoName}\`
-- For visual exploration of the graph, run \`cgrca-view\` (the web UI)
-  pointed at a session \`.sqlite\` written by \`cgrca rca --persist <path>\`.
-- The RCA protocol is enforced — don't band-aid the symptom; verify the
-  hypothesis before fixing.
+- For visual exploration, run \`cgrca-view\` pointed at a session
+  \`.sqlite\` written by \`cgrca rca --persist <path>\`.
+- The RCA protocol is enforced — don't band-aid the symptom; verify
+  the hypothesis before fixing.
 `;
 }

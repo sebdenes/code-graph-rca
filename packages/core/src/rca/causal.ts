@@ -21,7 +21,7 @@ import { isStdlibName } from "./stdlib-names.js";
  * --- weight calibration -------------------------------------------------
  * The per-signal multipliers below were fit from 101 labelled
  * (failure -> known fix location) pairs mined from sebdenes/code-graph-rca
- * and sebdenes/athlai. The fit code lives at
+ * and <your-repo>. The fit code lives at
  *   tools/calibration/fit.mjs
  * and the corpus (gitignored, regenerate via collect.mjs) at
  *   tools/calibration/corpus.jsonl
@@ -130,7 +130,7 @@ const DEFAULT_TOP_N = 5;
 // The big jump from v2's holdout (top-1 0.20) is mostly because the corpus
 // itself is richer now: weeks-5/6 local-variable extraction grew the
 // arg_bindings.source_symbol_id resolution rate from 22.8% to 81.66%
-// (cgrca) / 77.6% (athlai), so pathBetween + ambiguity counts have more
+// (cgrca) / 77.6% (large Python repo), so pathBetween + ambiguity counts have more
 // signal to work with.
 //
 // Note on dataflowScore (week 7): the v2/v3 fit gave raw weight -0.80

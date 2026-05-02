@@ -10,7 +10,7 @@ import {
  * them stops being filtered, phantom rate jumps back up on real codebases.
  */
 const REGRESSION_NAMES = {
-  // Python unittest.mock — top leak in athlai (MagicMock 2060, AsyncMock 1102)
+  // Python unittest.mock — top leak in real-world Python repos (MagicMock 2060, AsyncMock 1102)
   pythonMocks: [
     "MagicMock",
     "AsyncMock",
@@ -29,7 +29,7 @@ const REGRESSION_NAMES = {
     "assert_has_calls",
   ],
 
-  // sqlite3 / DB-API + better-sqlite3 — `execute` was 1160 hits in athlai,
+  // sqlite3 / DB-API + better-sqlite3 — `execute` was 1160 hits in real-world Python repos,
   // `prepare` was 51 hits in cgrca
   dbCursor: [
     "execute",

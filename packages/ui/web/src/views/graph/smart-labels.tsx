@@ -115,7 +115,7 @@ function computePlacements(
     else byFile.set(file, [entry]);
   });
 
-  // Pre-filter files: with athlai-full (6903 files) the per-file × top-N
+  // Pre-filter files: with a 28k-symbol Python repo (6903 files) the per-file × top-N
   // expansion would emit ~35k label candidates and the 8-direction
   // collision loop is O(N²) — guaranteed renderer hang. Keep only the
   // top files by aggregate degree, so smart-labels remains useful at

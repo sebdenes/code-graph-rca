@@ -86,7 +86,7 @@ export function computeFileClusters(cy: Core): FileCluster[] {
   });
   // Sort largest first so big clusters render under smaller ones.
   clusters.sort((a, b) => b.size - a.size);
-  // Cap total clusters. With athlai-full (6903 files) we'd otherwise emit
+  // Cap total clusters. With a 28k-symbol Python repo (6903 files) we'd otherwise emit
   // 6900+ SVG nebula circles + 6900+ file-label <text> elements and hang
   // the renderer (RESULT_CODE_HUNG). 24 nebulas reads as cartography; more
   // becomes visual noise even when the page survives. The top-by-size

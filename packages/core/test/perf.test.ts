@@ -91,8 +91,8 @@ describe("perf regression (50k LOC, query-compile cache)", () => {
  * spend most of the second-run wall in a per-row FK-cascade DELETE at the
  * top of `indexScope`. With `foreign_keys = OFF` wrapping the bulk clear,
  * the second run should land within ~2× the cold run rather than the 3-4×
- * we used to see on athlai. We measure on a synthetic 500-file repo so CI
- * has real signal without depending on athlai's checkout. (We tried
+ * we used to see on large repos. We measure on a synthetic 500-file repo so CI
+ * has real signal without depending on any specific repo. (We tried
  * `defer_foreign_keys = ON` first; SQLite still scans every row at COMMIT,
  * so deferred FK didn't help — see the orchestrator comment for measured
  * timings.)

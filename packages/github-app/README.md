@@ -1,21 +1,14 @@
 # code-graph-rca-github-app
 
-PR-review for [code-graph-rca](https://github.com/sebdenes/code-graph-rca). On every pull request: index the changed scope, rank the most likely root-cause sites, compute the blast radius, post a single idempotent comment that updates in place on every push.
+GitHub Action and webhook server for [code-graph-rca](https://www.npmjs.com/package/code-graph-rca) on real workflows. On every pull request, index the changed scope, rank the most likely root-cause sites, compute the blast radius, and post one idempotent comment that updates in place on every push. On every production incident (Sentry or any alertmanager), run RCA against the configured repo at HEAD and open a GitHub issue with ranked candidates — so the on-call has a head start instead of a raw stack trace.
 
-**Two ways to use it:**
+For the high-level pitch and architecture, see the [repo README](https://github.com/sebdenes/code-graph-rca#readme).
 
-| | **GitHub Action** (`cgrca-pr-review`) | **GitHub App** (`cgrca-github-app`) |
-|---|---|---|
-| Hosting | none — runs on the PR's GitHub Actions runner | persistent webhook server you host (Fly / Render / Railway / VPS) |
-| Setup | drop one workflow file in `.github/workflows/` | register an App in github.com, deploy this server, point the webhook |
-| Auth | the runner's `GITHUB_TOKEN` | a private key + installation token |
-| Best for | individual repos, OSS, fast adoption | hosting cgrca-as-a-service across many repos under one bot identity |
+v0.4.0. Three surfaces, one handler: **Action mode**, **App mode**, and **Incident mode** (new this release).
 
-Both modes call the same handler and produce the same comment. Pick whichever fits your distribution model.
+## 1. Action mode (no hosting)
 
-## Path A — GitHub Action (recommended start)
-
-Drop this at `.github/workflows/cgrca.yml`:
+Drop this at `.github/workflows/cgrca-pr-review.yml`:
 
 ```yaml
 name: cgrca PR review
@@ -34,125 +27,61 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: sebdenes/code-graph-rca@v0.3.1
+      - uses: sebdenes/code-graph-rca@latest
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-That's it. No secrets to register, no service to deploy. The Action installs `code-graph-rca-github-app` from npm, runs it against the PR head, posts the comment.
+That's it — no secrets to register, no service to deploy. The composite action installs `code-graph-rca-github-app` from npm and runs `cgrca-pr-review` against the PR head using the runner's `GITHUB_TOKEN`. Pin to a specific version with `pr-review-version: <semver>` if you don't want to track `latest`.
 
-The comment is upserted by an HTML marker (`<!-- cgrca-pr-bot:v1 -->`), so re-pushes update the same comment instead of stacking new ones.
+The comment is upserted by an HTML marker (`<!-- cgrca-comment -->`), so re-pushes update the same comment instead of stacking new ones. The comment template lists the top causal candidates, the changed-scope summary, and a blast-radius section for each touched symbol.
 
-## Path B — GitHub App (hosted webhook)
+## 2. App mode (hosted webhook)
 
-The original mode. Use when you want one bot identity reviewing PRs across many repos under a shared install — not per-repo workflow files.
+Use this when you want one bot identity reviewing PRs across many repos under a shared install, instead of dropping a workflow file into each one.
 
-### Environment
+```sh
+npm install -g code-graph-rca-github-app
+code-graph-rca-github-app          # reads env, listens on PORT (default 3000)
+```
+
+Endpoint: `POST /webhook` (GitHub `pull_request` events).
 
 | Variable | Purpose |
 | --- | --- |
 | `GITHUB_APP_ID` | Numeric App ID from the GitHub App settings page. |
-| `GITHUB_APP_PRIVATE_KEY` _or_ `GITHUB_APP_PRIVATE_KEY_PATH` | PEM contents (with literal `\n` allowed) **or** a filesystem path to the `.pem` file. |
-| `GITHUB_WEBHOOK_SECRET` | The shared secret that GitHub uses to sign delivery payloads. |
+| `GITHUB_APP_PRIVATE_KEY` *or* `GITHUB_APP_PRIVATE_KEY_PATH` | PEM contents (with literal `\n` allowed) **or** a filesystem path to the `.pem`. |
+| `GITHUB_WEBHOOK_SECRET` | The shared secret that signs delivery payloads. |
 | `PORT` | Optional, default `3000`. |
 
-## Register the GitHub App
+### Register the GitHub App
 
 1. https://github.com/settings/apps → **New GitHub App**.
-2. Set **Webhook URL** to `https://<your-host>/webhook`.
-3. Set **Webhook secret** to the same value as `GITHUB_WEBHOOK_SECRET`.
-4. **Repository permissions:**
-   - `pull_requests`: **Read & write**
-   - `contents`: **Read**
-   - `issues`: **Read & write**
-5. **Subscribe to events:** `Pull request`.
-6. Generate a private key (download `.pem`) and either pass its contents in `GITHUB_APP_PRIVATE_KEY` or its path in `GITHUB_APP_PRIVATE_KEY_PATH`.
-7. Install the App on the org/repos you want it to review.
+2. **Webhook URL**: `https://<your-host>/webhook`.
+3. **Webhook secret**: same value as `GITHUB_WEBHOOK_SECRET`.
+4. **Repository permissions**: `pull_requests` Read & write, `contents` Read, `issues` Read & write.
+5. **Subscribe to events**: `Pull request`.
+6. Generate a private key, then pass its contents in `GITHUB_APP_PRIVATE_KEY` or its path in `GITHUB_APP_PRIVATE_KEY_PATH`.
+7. Install the App on the org/repos to review.
 
-## Run locally
+For local dev: `smee.io` or `cloudflared tunnel` to forward GitHub deliveries to `localhost:3000`. A minimal `Dockerfile` ships in this directory for Fly.io / Railway / VPS deploys.
 
-```bash
-npm -w packages/github-app run build
-GITHUB_APP_ID=12345 \
-GITHUB_APP_PRIVATE_KEY_PATH=./cgrca.pem \
-GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32) \
-PORT=3000 \
-node packages/github-app/dist/cli.js
-```
+## 3. Incident mode (new this release)
 
-Use [smee.io](https://smee.io/) or `cloudflared tunnel` to forward GitHub deliveries to `localhost`.
-
-## Deploy: Fly.io
-
-```bash
-# fly.toml app = "cgrca-github-app", primary_region = "iad"
-fly launch --copy-config --no-deploy
-fly secrets set \
-  GITHUB_APP_ID=12345 \
-  GITHUB_APP_PRIVATE_KEY="$(cat cgrca.pem)" \
-  GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)"
-fly deploy
-```
-
-A minimal `Dockerfile` ships in this directory; Fly auto-detects it.
-
-## Deploy: Vercel (Node serverless)
-
-This app must run as a **Node** serverless function (not Edge — it shells out to `git` and uses native sqlite).
-
-`vercel.json`:
-
-```json
-{
-  "version": 2,
-  "builds": [
-    { "src": "packages/github-app/dist/cli.js", "use": "@vercel/node" }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "/packages/github-app/dist/cli.js" }
-  ],
-  "functions": {
-    "packages/github-app/dist/cli.js": { "memory": 1024, "maxDuration": 60 }
-  }
-}
-```
-
-Set the same env vars in **Project → Settings → Environment Variables**. Note that Vercel functions are short-lived, so very large monorepos may exceed the 60s budget — for those, prefer Fly.io or a long-running VM.
-
-## Self-host with Docker
-
-```bash
-docker build -t cgrca-gha -f packages/github-app/Dockerfile .
-docker run --rm -p 3000:3000 \
-  -e GITHUB_APP_ID=12345 \
-  -e GITHUB_APP_PRIVATE_KEY="$(cat cgrca.pem)" \
-  -e GITHUB_WEBHOOK_SECRET=... \
-  cgrca-gha
-```
-
-## Path C — Incident-response surface (Sentry / generic stack traces)
-
-When a production error fires, point Sentry (or your alertmanager / scripts) at
-the same hosted server: cgrca runs RCA against the configured repo at HEAD and
-opens a GitHub issue with the ranked candidates, so the on-call has a head start
-instead of a raw stack trace.
+When a production error fires, point Sentry (or any alertmanager / script) at the same hosted server. cgrca runs RCA against the configured repo at HEAD and opens a GitHub issue with the ranked candidates.
 
 Two endpoints, one handler:
 
-| Endpoint | Auth | Used for |
+| Endpoint | Auth | Purpose |
 | --- | --- | --- |
-| `POST /sentry` | HMAC-sha256 `Sentry-Hook-Signature` header against `SENTRY_WEBHOOK_SECRET` | Sentry "internal integration" / issue-alert webhooks |
-| `POST /incident` | `Authorization: Bearer $INCIDENT_BEARER_TOKEN` | generic JSON `{ issueId, title, failureText }` from any alerting source |
+| `POST /sentry` | HMAC-SHA256 `Sentry-Hook-Signature` against `SENTRY_WEBHOOK_SECRET` | Sentry "internal integration" / issue-alert webhooks. |
+| `POST /incident` | `Authorization: Bearer $INCIDENT_BEARER_TOKEN` | Generic JSON `{ issueId, title, failureText }` from any source. |
 
-Both routes are **disabled by default** — when neither secret is set they reply
-`503 { "error": "...endpoint disabled..." }` so a public hostname doesn't
-accidentally accept anonymous incident POSTs.
-
-### Environment
+Both routes are **disabled by default** — when neither secret is set, they reply `503 { "error": "...endpoint disabled..." }`, so a public hostname doesn't accidentally accept anonymous incident POSTs.
 
 | Variable | Purpose |
 | --- | --- |
-| `SENTRY_WEBHOOK_SECRET` | Secret shared with Sentry; HMAC-sha256 over the raw body must match the `Sentry-Hook-Signature` header. |
+| `SENTRY_WEBHOOK_SECRET` | HMAC-SHA256 secret shared with Sentry. |
 | `INCIDENT_BEARER_TOKEN` | Bearer token required on `POST /incident`. |
 | `INCIDENT_REPO` | `owner/repo` of the long-lived clone to RCA against (single repo per install for now). |
 | `INCIDENT_REPO_PATH` | Filesystem path to the long-lived clone. |
@@ -160,19 +89,15 @@ accidentally accept anonymous incident POSTs.
 ### Wire it up in Sentry
 
 1. Sentry → **Settings → Developer Settings → New Internal Integration**.
-2. **Webhook URL:** `https://<your-host>/sentry`
-3. **Webhook secret:** paste the same value as `SENTRY_WEBHOOK_SECRET`.
-4. **Permissions:** `Issues & Events: Read`.
-5. **Webhooks:** subscribe to `issue: created` (and optionally `issue: resolved`).
+2. **Webhook URL**: `https://<your-host>/sentry`.
+3. **Webhook secret**: paste the same value as `SENTRY_WEBHOOK_SECRET`.
+4. **Permissions**: `Issues & Events: Read`.
+5. **Webhooks**: subscribe to `issue: created` (and optionally `issue: resolved`).
 6. Install the integration on the project that fires for your prod service.
-
-Re-fires of the same Sentry issue id update the existing GitHub issue in place
-(matched on the hidden `<!-- cgrca-incident:<id> -->` marker), so on-call inboxes
-don't get spammed with N duplicates per outage.
 
 ### Generic stack traces (no Sentry)
 
-```bash
+```sh
 curl -X POST https://<your-host>/incident \
   -H "Authorization: Bearer $INCIDENT_BEARER_TOKEN" \
   -H "Content-Type: application/json" \
@@ -183,12 +108,34 @@ curl -X POST https://<your-host>/incident \
   }'
 ```
 
-If `runRca` itself fails (parse error, repo mismatch, timeout) the endpoint
-still files a GitHub issue containing `RCA failed: <error>` and the original
-failure text — the alert is never silently dropped.
+If `runRca` itself fails (parse error, repo mismatch, timeout) the endpoint still files a GitHub issue containing `RCA failed: <error>` plus the original failure text — the alert is never silently dropped.
+
+## Idempotency and retries
+
+PR comments and incident issues are both keyed by HTML markers — `<!-- cgrca-comment -->` for PR review, `<!-- cgrca-incident:<id> -->` for incidents. Re-fires of the same PR push or the same Sentry issue id update the existing comment / issue in place instead of stacking duplicates.
+
+All GitHub API calls go through a retry wrapper (transient 5xx, `EPIPE`, `ECONNRESET`, `ECONNREFUSED`, secondary-rate-limit `retry-after`) — the v0.3.2 fix after the action ran into a flaky GitHub edge in long-running workflows.
+
+## Run locally
+
+```sh
+GITHUB_APP_ID=12345 \
+GITHUB_APP_PRIVATE_KEY_PATH=./cgrca.pem \
+GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32) \
+PORT=3000 \
+code-graph-rca-github-app
+```
 
 ## Tests
 
-```bash
+```sh
 npm -w packages/github-app test
 ```
+
+## Status
+
+Production at one-org scale; multi-repo incident mode is single-repo per install for now (one `INCIDENT_REPO`).
+
+## License
+
+MIT.

@@ -258,7 +258,7 @@ function resolveReceiverTypes(
  *
  * Could later be extended to walk through chained `.attr.attr` if we tie
  * the leading attribute to a known class type, but the simple identifier
- * receiver alone covers most of the long tail in athlai (`db.execute`,
+ * receiver alone covers most of the long tail in real-world Python repos (`db.execute`,
  * `cursor.fetchall`, `session.commit`).
  */
 function parseReceiverFromCallLine(

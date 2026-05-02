@@ -38,7 +38,7 @@ export async function indexScope(opts: IndexOptions): Promise<IndexResult> {
     // future schema relaxations and to surface ordering bugs early.
     //
     // Suspend FK enforcement around the bulk clear. Per-row FK checks dominate
-    // wall time on a populated DB. Measured on athlai (54k edges, 17k symbols,
+    // wall time on a populated DB. Measured on a 28k-symbol Python repo (54k edges, 17k symbols,
     // 7k arg bindings, 1.4k files) the same DELETE chain takes:
     //   - foreign_keys = ON           : 5800 ms  (per-row cascade check)
     //   - defer_foreign_keys = ON     : 5800 ms  (deferred check at COMMIT

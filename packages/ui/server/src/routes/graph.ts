@@ -64,7 +64,7 @@ export function registerGraphRoute(
       const symbolIds = new Set(symbolRows.map((r) => r.id));
 
       // Only return files referenced by the symbols in scope. Returning every
-      // indexed file (athlai-full = 6903) was the actual unresponsiveness
+      // indexed file (a 28k-symbol Python repo = 6903) was the actual unresponsiveness
       // cause: Cytoscape held ~7400 nodes even when maxSymbols capped at 400,
       // because file + folder nodes were unbounded. With this filter the file
       // count tracks the scope, and folder nodes (synthesized client-side

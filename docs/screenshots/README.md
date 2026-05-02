@@ -4,7 +4,7 @@ Drop the four PNGs referenced from the root `README.md` here.
 
 | Filename | Capture |
 |---|---|
-| `01-constellation.png` | Graph tab, athlai-bot session (or any large session). Force-directed cluster with labels visible. |
+| `01-constellation.png` | Graph tab, large-repo session (or any large session). Force-directed cluster with labels visible. |
 | `02-rca.png` | RCA tab, self-resolveScope session. Left panel shows ranked candidates with score badges + recent commits. |
 | `03-impact.png` | Impact tab after running `findCallers` impact analysis. The "high blast radius" banner + tree + ranked table. |
 | `04-inspector.png` | Graph tab with a node selected. Monaco panel slid in on the left, showing the source. |

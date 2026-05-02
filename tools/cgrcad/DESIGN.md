@@ -1,11 +1,36 @@
 # cgrcad — persistent code-graph daemon
 
-`cgrcad` is the long-lived process that ends cgrca's cold-start tax. Today
-every CLI subcommand, every MCP request, every UI tab, and the GitHub App
-all reopen `:memory:` and run a fresh `indexScope`. The architect's killer
-change is to lift state out of the per-call lifecycle and into one daemon
-per machine that owns one persistent sqlite per repo, keyed by the realpath
-of the repo root and content-addressed by `git hash-object` of each file.
+`cgrcad` is the long-lived process that ends cgrca's cold-start tax. Before
+the daemon, every CLI subcommand, every MCP request, every UI tab, and the
+GitHub App reopened `:memory:` and ran a fresh `indexScope`. The daemon
+lifts state out of the per-call lifecycle and into one process per machine
+that owns one persistent sqlite per repo, keyed by the realpath of the
+repo root and content-addressed by `git hash-object` of each file.
+
+## Status (v0.4)
+
+**Shipped:**
+
+- JSON-RPC 2.0 server over UDS (`packages/core/src/daemon/server.ts`)
+- Lockfile + stale-PID reclaim (`packages/core/src/daemon/lockfile.ts`)
+- Per-repo sqlite handle registry + idle timeout (`state.ts`)
+- **fs-watcher invalidation** — `node:fs.watch` recursive watcher per repo
+  (`packages/core/src/daemon/watcher.ts`); no chokidar dep
+- **Blob-cache** — schema v5 `blob_cache` table; `git hash-object --batch`
+  joined against cached extraction JSON (`packages/core/src/daemon/cache.ts`,
+  `reextract.ts`)
+- Client transport with auto-spawn + in-process fallback (`client.ts`)
+- 7 daemon integration tests passing (`packages/core/test/daemon/server.test.ts`)
+  covering ping, warm-call latency (<50ms), stale-lock reclaim, fs-watch
+  invalidation, RPC option plumbing (`minConfidence`, `maxCommits`), and
+  idle timeout
+
+**Design-only / out of scope (this slice):**
+
+- Windows named pipes (the `net` API supports them; the path layout
+  changes from `~/.cgrca/daemon.sock` to `\\.\pipe\cgrcad-<user>`)
+- Multi-user daemon sharing (single-user `~/.cgrca` for now)
+- Auth / transport encryption (UDS perms `0600` are the only gate)
 
 ## Architecture
 
@@ -23,7 +48,7 @@ of the repo root and content-addressed by `git hash-object` of each file.
                             ├────────────────┤
                             │  RPC dispatch  │
                             │  repo registry │  realpath → sqlite handle
-                            │  fs watchers   │  chokidar-free; node:fs.watch
+                            │  fs watchers   │  node:fs.watch (recursive)
                             │  idle timeout  │
                             └───────┬────────┘
                                     │
@@ -51,9 +76,9 @@ Methods mirror the existing core API one-to-one:
 | `stop`      | `{}`                                                | `{ stopping: true }`          |
 | `index`     | `{ repoRoot }`                                      | `IndexResult` minus `db`      |
 | `define`    | `{ repoRoot, name, opts? }`                         | `Definition[]`                |
-| `callers`   | `{ repoRoot, name, depth? }`                        | `CallerTree`                  |
+| `callers`   | `{ repoRoot, name, depth?, minConfidence? }`        | `CallerTree`                  |
 | `callees`   | `{ repoRoot, name, depth? }`                        | `CalleeTree`                  |
-| `changed`   | `{ repoRoot, name, sinceDays? }`                    | `GitChange[]`                 |
+| `changed`   | `{ repoRoot, name, sinceDays?, maxCommits? }`       | `GitChange[]`                 |
 | `rca`       | `{ repoRoot, failure, budget? }`                    | `RcaResult`                   |
 
 Error codes follow the JSON-RPC convention: `-32700` parse, `-32600`
@@ -122,12 +147,3 @@ warm repo with one dirty file, this turns N tree-sitter parses into 1.
   someone hand-edits the file under us, the next `git hash-object` returns
   a new sha, which misses the cache, which rebuilds. Worst case: one extra
   parse.
-
-## Out of scope (this slice)
-
-- MCP integration (week 4 — same RPC client, different transport adapter).
-- UI integration (week 4 — UI process becomes a thin RPC client too).
-- Windows named pipes (the `net` API supports them; the path layout
-  changes from `~/.cgrca/daemon.sock` to `\\.\pipe\cgrcad-<user>`).
-- Multi-user daemon sharing (single-user `~/.cgrca` for now).
-- Auth/transport encryption (UDS perms `0600` are the only gate).
