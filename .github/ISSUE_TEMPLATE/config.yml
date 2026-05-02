@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and discussion
+    url: https://github.com/sebdenes/code-graph-rca/discussions
+    about: Open a discussion for usage questions, design ideas, or anything that isn't a bug or feature request.
+  - name: Security report (private)
+    url: https://github.com/sebdenes/code-graph-rca/blob/main/SECURITY.md
+    about: Found a vulnerability? Email the maintainer privately — do not open a public issue.

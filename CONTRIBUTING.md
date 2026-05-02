@@ -1,79 +1,85 @@
-# Contributing
+# Contributing to Halo
 
-## Project layout
+Welcome. Halo is a code knowledge graph + RCA engine shipped as three packages
+(`code-graph-rca`, `code-graph-rca-ui`, `code-graph-rca-github-app`) with binaries
+`cgrca`, `cgrca-view`, and `cgrca-pr-review`. We treat contributions the same way
+we treat the tool itself: small, scoped, honest, and tested. If you found a bug or
+have a feature in mind, open an issue first so we can scope it together.
 
-```
-src/
-  index.ts              public API surface
-  types.ts              shared row + result types
-  graph/
-    orchestrator.ts     indexScope: walk -> extract -> resolve
-    scope.ts            resolveScope: failure -> seed file set
-    walker.ts           filesystem walk, gitignore, language detection
-    parser/
-      extract.ts        tree-sitter -> ExtractedFile
-      loader.ts         grammar + query loading (web-tree-sitter)
-      queries/
-        typescript.scm  TS/TSX/JS captures
-        python.scm      Python captures
-    resolve.ts          second-pass edge resolution (same-file, self/this, imports)
-    queries.ts          definitionOf / callersOf / calleesOf / symbolsInFile / recentlyChangedNear
-    db.ts               better-sqlite3 wrapper
-    schema.sql          files / symbols / edges / imports
-  rca/
-    runner.ts           runRca: scope → index → 5 queries → prompt
-    context.ts          graph-context block formatter
-    prompt.ts           default RCA prompt template + protocol
-  cli.ts                `cgrca` entry point
-test/
-  smoke.test.ts
-  graph/
-    queries.test.ts
-    scope.test.ts
-    python.test.ts
-    git-change.test.ts
-  fixtures/
-    ts-tiny/
-    ts-monorepo/
-    py-package/
-docs/
-  ARCHITECTURE.md
-  RCA_PROTOCOL.md
-  EXTENDING.md
-```
-
-Both the library API (`src/index.ts` re-exports `indexScope`, `runRca`, and the five queries) and the `cgrca` CLI (`src/cli.ts`) ship in v1. End-to-end tests live in `test/rca/runner.test.ts` and `test/cli.test.ts`.
-
-## Running tests
+## Development setup
 
 ```sh
-npm test            # one-shot
-npm run test:watch  # vitest in watch mode
-npm run typecheck   # strict TS, no emit
-npm run build       # compile to dist/ and copy .scm + wasm assets
+git clone https://github.com/sebdenes/code-graph-rca.git
+cd code-graph-rca
+npm install                # installs all three workspaces from root
+npm test -ws --if-present  # run the full suite across packages
 ```
 
-Tests use vitest and run against fixture repos under `test/fixtures/`. Add a fixture rather than mutating an existing one when your test introduces new shape.
+Per-workspace iteration:
 
-## How to add a language
+```sh
+npm -w packages/core test
+npm -w packages/ui run dev
+npm -w packages/github-app test
+```
 
-The graph is grammar-driven. Adding a language is mostly declarative.
+## Branching and PRs
 
-1. **Drop the grammar wasm into the resolution path.** Prefer pinning via [`tree-sitter-wasms`](https://www.npmjs.com/package/tree-sitter-wasms) when it ships your grammar; otherwise add the `.wasm` next to the existing ones and update `src/graph/parser/loader.ts` to find it.
-2. **Add a `.scm` query file** under `src/graph/parser/queries/<lang>.scm` using the documented capture names (`@symbol.function`, `@symbol.method`, `@symbol.class`, `@symbol.name`, `@symbol.parent`, `@symbol.exported`, `@call.callee`, `@call.object`, `@extends.target`, `@implements.target`, `@import.named`, `@import.default`, `@import.namespace`, `@import.alias`, `@import.source`). See `docs/EXTENDING.md` for the full reference and an annotated example.
-3. **Extend language detection** in two places: `pickGrammar` in `src/graph/parser/extract.ts` (extension -> grammar name) and `languageOf` in `src/graph/walker.ts` (extension -> `Language`).
-4. **Update the `Language` union** in `src/types.ts`. Strict TS means everything that branches on language will fail to compile until you handle the new arm — that is the point.
-5. **Add a fixture and a test.** Drop a tiny project under `test/fixtures/<lang>-tiny/` and write a test in `test/graph/<lang>.test.ts` that asserts a definition, a call edge, and an import resolve correctly. Mirror the shape of `test/graph/python.test.ts`.
+- Branch off `main`. Use a short, descriptive name (`fix/ui-topbar-collapse`,
+  `feat/core-python-decorators`).
+- Open PRs against `main`. Squash-merge is the default.
+- Non-trivial PRs need at least one reviewer. Tag the maintainer.
+- Keep PRs small and scoped — one concern per PR. New language support, new query,
+  parser fix, resolver heuristic, UI polish — split them up.
 
-The cross-file import resolver in `src/graph/resolve.ts` currently special-cases TypeScript and Python. New languages will fall through to "no cross-file resolution" until you add a branch — which is acceptable: same-file edges still resolve, and unresolved edges land at confidence 0.5 rather than disappearing.
+## Commit style
 
-## Coding standards
+Imperative, scoped, lowercase scope in parens:
 
-- **Strict TypeScript.** `tsconfig.json` enables strict mode and `noUncheckedIndexedAccess`. Don't loosen it; fix the call site.
-- **No comments-as-bandage.** If a comment is explaining why something looks broken, the code is broken — fix it. Comments should explain non-obvious *intent*, not paper over confusion.
-- **Honest fallbacks over silent failure.** If you can't resolve a thing, mark it unresolved with a lower confidence and surface it. Don't fabricate.
-- **RCA protocol on bugs.** When fixing a non-trivial bug, follow the seven-step protocol in `docs/RCA_PROTOCOL.md`. The protocol is the same one this tool produces for downstream agents — we hold ourselves to it.
+```
+fix(ui): collapse double topbars in AppShell
+feat(core): resolve Python decorators across modules
+docs: rewrite README around the Halo wedge
+```
 
-## Pull requests
+Pair-programmed commits use the `Co-Authored-By:` trailer convention you'll see
+throughout `git log`. Keep that convention when an agent or another human
+collaborated on the change.
 
-Keep them small and scoped. New language support, new query, parser fix, resolver heuristic — one concern per PR. Include the fixture and the test. If you change a capture name in a `.scm` file, update both `extract.ts` and `docs/EXTENDING.md` in the same commit.
+## Test bar
+
+The current bar is **all 329 tests across the three packages must stay green**.
+New features ship with new tests. Bug fixes ship with a regression test that
+fails before the fix and passes after. The CI workflow under `.github/workflows/`
+runs the same suite — if it's red there, it's red here.
+
+## Code style
+
+- **Strict TypeScript.** `tsconfig.json` enables `strict` and
+  `noUncheckedIndexedAccess`. Don't loosen it; fix the call site.
+- **No `any` without a one-line comment** explaining why the type is genuinely
+  unknowable at that boundary.
+- **Regex-only highlighter** for the side panel in the UI. We deliberately do
+  not pull `shiki` (or any tokenizer with a wasm/JSON payload) into that path —
+  the side panel needs to stay cheap to render.
+- **Honest fallbacks over silent failure.** If you can't resolve a thing, mark
+  it unresolved at lower confidence and surface it. Don't fabricate.
+
+## Calibration corpus
+
+Halo's RCA ranking weights are fit on a corpus of real incidents. If you change
+a feature that feeds the ranker — a new edge type, a new heuristic, a new
+confidence — refit the weights and include the new `fit.out.json` in your PR.
+See [`tools/calibration/README.md`](tools/calibration/README.md) for the corpus
+layout, `collect.mjs` / `score.mjs` / `fit.mjs` workflow, and how to add new
+incidents without leaking proprietary code.
+
+## Reporting bugs and asking questions
+
+- Bugs: use the bug report template under `.github/ISSUE_TEMPLATE/`.
+- Features: use the feature request template.
+- Questions, design discussions, "is this a good fit": open a Discussion.
+- Security: see [`SECURITY.md`](SECURITY.md). Do **not** open a public issue.
+
+By contributing you agree your contributions are licensed under the MIT
+License that covers the rest of the project.

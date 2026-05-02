@@ -1,17 +1,19 @@
 # code-graph-rca-github-app
 
-GitHub Action and webhook server for [code-graph-rca](https://www.npmjs.com/package/code-graph-rca) on real workflows. On every pull request, index the changed scope, rank the most likely root-cause sites, compute the blast radius, and post one idempotent comment that updates in place on every push. On every production incident (Sentry or any alertmanager), run RCA against the configured repo at HEAD and open a GitHub issue with ranked candidates — so the on-call has a head start instead of a raw stack trace.
+*part of [Halo](https://github.com/sebdenes/code-graph-rca)*
 
-For the high-level pitch and architecture, see the [repo README](https://github.com/sebdenes/code-graph-rca#readme).
+**Halo on GitHub.** A PR-review bot that indexes the changed scope on every push, ranks the most likely root-cause sites with Halo's 7-signal causal ranker, computes blast radius, and posts one idempotent comment that updates in place. A Sentry / incident webhook that runs Halo against the configured repo at HEAD when production fires and opens a GitHub issue with ranked candidates — so the on-call has a head start instead of a raw stack trace.
 
-v0.4.0. Three surfaces, one handler: **Action mode**, **App mode**, and **Incident mode** (new this release).
+For Halo's product overview and architecture, see the [repo README](https://github.com/sebdenes/code-graph-rca#readme).
+
+v0.4.1. Three surfaces, one handler: **Action mode**, **App mode**, and **Incident mode**.
 
 ## 1. Action mode (no hosting)
 
-Drop this at `.github/workflows/cgrca-pr-review.yml`:
+The simplest way to run Halo on GitHub. Drop this at `.github/workflows/cgrca-pr-review.yml`:
 
 ```yaml
-name: cgrca PR review
+name: Halo PR review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -20,7 +22,7 @@ permissions:
   pull-requests: write
   issues: write
 jobs:
-  cgrca:
+  halo:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,11 +36,11 @@ jobs:
 
 That's it — no secrets to register, no service to deploy. The composite action installs `code-graph-rca-github-app` from npm and runs `cgrca-pr-review` against the PR head using the runner's `GITHUB_TOKEN`. Pin to a specific version with `pr-review-version: <semver>` if you don't want to track `latest`.
 
-The comment is upserted by an HTML marker (`<!-- cgrca-comment -->`), so re-pushes update the same comment instead of stacking new ones. The comment template lists the top causal candidates, the changed-scope summary, and a blast-radius section for each touched symbol.
+The comment is upserted by an HTML marker (`<!-- cgrca-comment -->`), so re-pushes update the same comment instead of stacking new ones. The template lists Halo's top causal candidates, the changed-scope summary, and a blast-radius section for each touched symbol.
 
 ## 2. App mode (hosted webhook)
 
-Use this when you want one bot identity reviewing PRs across many repos under a shared install, instead of dropping a workflow file into each one.
+Use this when you want one Halo identity reviewing PRs across many repos under a shared install, instead of dropping a workflow file into each one.
 
 ```sh
 npm install -g code-graph-rca-github-app
@@ -62,13 +64,13 @@ Endpoint: `POST /webhook` (GitHub `pull_request` events).
 4. **Repository permissions**: `pull_requests` Read & write, `contents` Read, `issues` Read & write.
 5. **Subscribe to events**: `Pull request`.
 6. Generate a private key, then pass its contents in `GITHUB_APP_PRIVATE_KEY` or its path in `GITHUB_APP_PRIVATE_KEY_PATH`.
-7. Install the App on the org/repos to review.
+7. Install Halo on the org/repos to review.
 
 For local dev: `smee.io` or `cloudflared tunnel` to forward GitHub deliveries to `localhost:3000`. A minimal `Dockerfile` ships in this directory for Fly.io / Railway / VPS deploys.
 
-## 3. Incident mode (new this release)
+## 3. Incident mode
 
-When a production error fires, point Sentry (or any alertmanager / script) at the same hosted server. cgrca runs RCA against the configured repo at HEAD and opens a GitHub issue with the ranked candidates.
+When a production error fires, point Sentry (or any alertmanager / script) at the same hosted Halo server. Halo runs RCA against the configured repo at HEAD and opens a GitHub issue with the ranked candidates.
 
 Two endpoints, one handler:
 
@@ -83,7 +85,7 @@ Both routes are **disabled by default** — when neither secret is set, they rep
 | --- | --- |
 | `SENTRY_WEBHOOK_SECRET` | HMAC-SHA256 secret shared with Sentry. |
 | `INCIDENT_BEARER_TOKEN` | Bearer token required on `POST /incident`. |
-| `INCIDENT_REPO` | `owner/repo` of the long-lived clone to RCA against (single repo per install for now). |
+| `INCIDENT_REPO` | `owner/repo` of the long-lived clone Halo will RCA against (single repo per install for now). |
 | `INCIDENT_REPO_PATH` | Filesystem path to the long-lived clone. |
 
 ### Wire it up in Sentry
@@ -108,7 +110,7 @@ curl -X POST https://<your-host>/incident \
   }'
 ```
 
-If `runRca` itself fails (parse error, repo mismatch, timeout) the endpoint still files a GitHub issue containing `RCA failed: <error>` plus the original failure text — the alert is never silently dropped.
+If Halo's `runRca` itself fails (parse error, repo mismatch, timeout) the endpoint still files a GitHub issue containing `RCA failed: <error>` plus the original failure text — the alert is never silently dropped.
 
 ## Idempotency and retries
 
@@ -120,7 +122,7 @@ All GitHub API calls go through a retry wrapper (transient 5xx, `EPIPE`, `ECONNR
 
 ```sh
 GITHUB_APP_ID=12345 \
-GITHUB_APP_PRIVATE_KEY_PATH=./cgrca.pem \
+GITHUB_APP_PRIVATE_KEY_PATH=./halo.pem \
 GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32) \
 PORT=3000 \
 code-graph-rca-github-app

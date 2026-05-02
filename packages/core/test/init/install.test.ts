@@ -52,7 +52,10 @@ describe("runInit", () => {
     expect(result.agentsMd.written).toBe(true);
     const agents = readFileSync(result.agentsMd.path, "utf8");
     expect(agents).toContain("cgrca_rcaPrompt");
-    expect(agents).toContain("AGENTS.md");
+    // Halo branding (v0.4.4 rebrand) — template no longer self-references
+    // "AGENTS.md" but opens with the Halo wordmark + cites MCP.
+    expect(agents).toContain("Halo");
+    expect(agents).toContain("MCP");
   });
 
   it("re-running is idempotent — cgrca entry is replaced, not duplicated", () => {

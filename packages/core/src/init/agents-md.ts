@@ -4,7 +4,7 @@
  * AGENTS.md is the open, editor-agnostic file most modern coding agents
  * (Cursor, Claude Code, Codex, Aider, etc.) read on session start to
  * pick up project context. We use it to teach the agent when and how
- * to call cgrca's MCP tools.
+ * to call Halo's MCP tools.
  *
  * Style: short, declarative, action-oriented. Every sentence either
  * tells the agent WHAT to do or gives one fact about the project.
@@ -19,15 +19,15 @@ export interface AgentsMdOptions {
 
 export function renderAgentsMd(opts: AgentsMdOptions): string {
   const { repoName } = opts;
-  return `# AGENTS.md
+  return `# Halo · RCA tools for AI agents
 
-This repo ships with **cgrca** — a code knowledge graph + RCA engine.
-Use it whenever you investigate a bug, plan a fix, or estimate the
-blast radius of a change.
+This repo ships with **Halo** — a code knowledge graph + RCA engine
+exposed over MCP. Use it whenever you investigate a bug, plan a fix,
+or estimate the blast radius of a change.
 
 ## Budget
 
-**Don't call more than 3 cgrca tools per investigation.** The ranked
+**Don't call more than 3 Halo tools per investigation.** The ranked
 output of \`cgrca_rca\` already collapses what would otherwise be a
 walk of callers / callees / changed / definitions. Start there.
 
@@ -46,8 +46,9 @@ walk of callers / callees / changed / definitions. Start there.
 3. **Before a signature change.** \`cgrca_callersOf\` at depth 3
    enumerates every caller; the unresolved-call hints flag dynamic
    dispatch you can't see from grep.
-4. **Sanity-check coverage.** \`cgrca_scope\` is a free dry-run that
-   tells you which files cgrca would index for a given failure.
+4. **Sanity-check coverage.** \`cgrca_symbolsInFile\` lists every
+   symbol Halo extracted from a file in source order — useful when
+   you're not sure whether a function was indexed.
 
 ## Tools
 
@@ -58,9 +59,8 @@ walk of callers / callees / changed / definitions. Start there.
 - \`cgrca_calleesOf\` — forward call tree (depth 1–4, default 1).
 - \`cgrca_symbolsInFile\` — every symbol in a file, source order.
 - \`cgrca_recentlyChangedNear\` — git log -L for a symbol's lines.
-- \`cgrca_scope\` — dry-run preview of which files cgrca would index.
 - \`cgrca_currentSelection\` / \`cgrca_publishSelection\` — bridge to a
-  running \`cgrca-view\` UI; degrade to \`{ none: true }\` when no UI is up.
+  running viewer; degrade to \`{ none: true }\` when no UI is up.
 
 ## Daemon
 
@@ -78,7 +78,7 @@ up. No tool-call changes needed.
 
 ## Honest fallbacks
 
-cgrca returns confidence-graded edges. **1.0** = resolved exactly.
+Halo returns confidence-graded edges. **1.0** = resolved exactly.
 **0.7** = ambiguous receiver (e.g. \`self.foo()\` with multiple
 matches). **0.5** = unresolved — call target is dynamic, builtin,
 or untraced; the \`to_name\` is preserved as grep-bait. Don't drop
