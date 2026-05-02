@@ -210,6 +210,9 @@ function runCgrca(failureArg, { extraFlags = [] } = {}) {
 		'--json',
 		'--top-n',
 		String(TOP_N),
+		...(process.env.CGRCA_MAX_FILES
+			? ['--max-files', process.env.CGRCA_MAX_FILES]
+			: []),
 		...extraFlags,
 	];
 	const t0 = Date.now();
