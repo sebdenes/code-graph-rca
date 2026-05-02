@@ -1,12 +1,26 @@
+/**
+ * AppShell — Observatory-styled topbar (Halo wordmark + Graph/RCA/Impact tabs
+ * + session HUD) wrapping the active stage. The cosmic palette + typography
+ * are scoped in `shell.css` so they don't leak into other surfaces that still
+ * lean on the Tailwind tokens declared in `index.css`.
+ *
+ * Per-tab views (graph, rca, impact) render their own internal topbars too;
+ * this shell sits ABOVE them so the seam now reads as a single cohesive bar.
+ */
 import type { ReactNode } from "react";
 import type { SessionSummary } from "@shared/api";
 import { useSession } from "../state/session.ts";
-import { cn } from "../lib/utils.ts";
+import "./shell.css";
+
+// Injected by Vite from packages/ui/package.json#version (see vite.config.ts).
+declare const __APP_VERSION__: string;
 
 interface Props {
   sessions: SessionSummary[];
   children: ReactNode;
 }
+
+const TABS = ["graph", "rca", "impact"] as const;
 
 export function AppShell({ sessions, children }: Props) {
   const sessionId = useSession((s) => s.sessionId);
@@ -14,43 +28,62 @@ export function AppShell({ sessions, children }: Props) {
   const view = useSession((s) => s.view);
   const setView = useSession((s) => s.setView);
 
-  return (
-    <div className="flex h-full w-full flex-col">
-      <header className="flex items-center gap-4 border-b border-border px-4 py-2 text-sm">
-        <div className="font-mono text-base font-semibold">cgrca-view</div>
+  const active = sessions.find((s) => s.id === sessionId) ?? null;
 
-        <div className="ml-4 flex items-center gap-2">
-          <label className="text-muted-foreground">session</label>
-          <select
-            className="rounded border border-border bg-muted px-2 py-1 text-foreground"
-            value={sessionId ?? ""}
-            onChange={(e) => setSessionId(e.target.value || null)}
-          >
-            {sessions.length === 0 && <option value="">(none)</option>}
-            {sessions.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.id} — {s.primarySymbol ?? "?"} ({s.fileCount}f / {s.symbolCount}s)
-              </option>
-            ))}
-          </select>
+  return (
+    <div className="app-shell">
+      <header className="app-shell-topbar">
+        <div className="brand-halo">
+          Halo<span className="dot" />
         </div>
 
-        <nav className="ml-auto flex gap-1">
-          {(["graph", "rca", "impact"] as const).map((v) => (
+        <nav className="tabs">
+          {TABS.map((v) => (
             <button
               key={v}
+              type="button"
               onClick={() => setView(v)}
-              className={cn(
-                "rounded px-3 py-1 text-sm uppercase tracking-wider",
-                v === view ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted",
-              )}
+              className={v === view ? "active" : undefined}
             >
               {v}
             </button>
           ))}
         </nav>
+
+        <div className="session">
+          <select
+            className="session-select"
+            value={sessionId ?? ""}
+            onChange={(e) => setSessionId(e.target.value || null)}
+            aria-label="session"
+          >
+            {sessions.length === 0 && <option value="">(none)</option>}
+            {sessions.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.id} — {s.primarySymbol ?? "?"}
+              </option>
+            ))}
+          </select>
+          {active && (
+            <>
+              <span>
+                <strong>{active.fileCount}</strong> files
+              </span>
+              <span>
+                <strong>{active.symbolCount}</strong> symbols
+              </span>
+              <span>
+                <strong>{active.edgeCount}</strong> edges
+              </span>
+            </>
+          )}
+          <span>
+            v
+            {typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.0.0"}
+          </span>
+        </div>
       </header>
-      <main className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</main>
+      <main className="app-shell-main">{children}</main>
     </div>
   );
 }

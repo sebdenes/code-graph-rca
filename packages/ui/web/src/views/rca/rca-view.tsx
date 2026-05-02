@@ -20,7 +20,7 @@ import { api } from "../../api/client.ts";
 import { useSession } from "../../state/session.ts";
 import { CandidatesPanel } from "./candidates-panel.tsx";
 import { SidePanel } from "./side-panel.tsx";
-import { Graph } from "../../components/graph/graph.tsx";
+import { RcaCanvas } from "./rca-canvas.tsx";
 import { buildElements } from "../../components/graph/build-elements.ts";
 import { SIGNAL_COLORS, SIGNAL_LABELS } from "./signal-radial.tsx";
 import "./rca.css";
@@ -117,7 +117,7 @@ export function RcaView({ sessionId }: { sessionId: string }) {
             Failed to load neighborhood: {String(callersQ.error ?? calleesQ.error)}
           </div>
         ) : (
-          <Graph
+          <RcaCanvas
             elements={elements}
             selectedSymbol={selectedSymbol}
             scoreThreshold={scoreThreshold}
