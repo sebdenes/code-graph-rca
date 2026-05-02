@@ -604,11 +604,11 @@ describe("buildCausalChain", () => {
 
   it("data-flow distance ranks an arg-source above a topology-only neighbor", () => {
     // Fixture: anchor A. Topology has TWO direct callers, X (the gold) and
-    // BYS (a bystander); both at topology distance 1. We then add a CALLS
-    // edge X→A (resolved) so pathBetween(X, A) returns a 2-step path —
-    // dataflowScore for X is 1.5. BYS has no resolved outgoing call to A,
-    // so its dataflowScore is 0. With dataflow weight 1.0 the gap should be
-    // enough to break the topology tie and put X above BYS.
+    // BYS (a bystander); both at topology distance 1. To exercise the
+    // week-7 arg-binding gate we model X as a *producer* whose value flows
+    // into the argument of a call from MID→A (so pathBetween(X, A) traces
+    // X --ARG_BIND--> MID --CALLS--> A, one ARG_BIND hop = dataflowScore
+    // 0.75). BYS has no arg-binding flow to A, so its dataflowScore stays 0.
     const db = openDb({});
     const insFile = db.prepare(
       "INSERT INTO files (path, language, subsystem, loc) VALUES (?, 'typescript', ?, 0)",
@@ -620,10 +620,17 @@ describe("buildCausalChain", () => {
     const aId = insSym.run(fid, "A").lastInsertRowid as number;
     const xId = insSym.run(fid, "X").lastInsertRowid as number;
     insSym.run(fid, "BYS").lastInsertRowid as number;
-    // Resolved CALLS edge X→A so pathBetween(X, A) is a real 2-step path.
-    db.prepare(
+    const midId = insSym.run(fid, "MID").lastInsertRowid as number;
+    // Resolved CALLS edge MID→A so the second leg of the path exists.
+    const edgeRes = db.prepare(
       "INSERT INTO edges (from_symbol_id, to_symbol_id, to_name, kind, confidence, call_line) VALUES (?, ?, 'A', 'CALLS', 1.0, NULL)",
-    ).run(xId, aId);
+    ).run(midId, aId);
+    const edgeId = edgeRes.lastInsertRowid as number;
+    // Arg binding: X (the producer) flows into the call MID→A as an
+    // identifier argument. pathBetween will hop X→MID via ARG_BIND.
+    db.prepare(
+      "INSERT INTO arg_bindings (edge_id, position, source_kind, source_text, source_symbol_id) VALUES (?, 0, 'identifier', 'X', ?)",
+    ).run(edgeId, xId);
 
     const callerTree: CallerTree = {
       target: "A",
@@ -674,9 +681,193 @@ describe("buildCausalChain", () => {
     const xIdx = out.findIndex((c) => c.name === "X");
     const bysIdx = out.findIndex((c) => c.name === "BYS");
     expect(xIdx).toBeLessThan(bysIdx);
-    // Rationale should call out the data-flow hops when dominant.
+    // Rationale should call out the arg-binding hops when dominant.
     if (x!.signals.dataflowScore >= x!.signals.proximityScore) {
-      expect(x!.rationale.toLowerCase()).toContain("data-flow");
+      expect(x!.rationale.toLowerCase()).toContain("arg-binding");
     }
+  });
+
+  it("dataflowScore is 0 for pure-CALLS paths (week-7 gate)", () => {
+    // X→A is a resolved CALLS edge with NO arg_bindings table row. Under
+    // the week-7 redesign, pathBetween still finds X→A but every hop
+    // is CALLS, so dataflowScore must be 0 (proximityScore already
+    // captures the topology — re-counting it here was the v6 noise).
+    const db = openDb({});
+    const insFile = db.prepare(
+      "INSERT INTO files (path, language, subsystem, loc) VALUES (?, 'typescript', ?, 0)",
+    );
+    const insSym = db.prepare(
+      "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported) VALUES (?, ?, 'function', NULL, 1, 10, NULL, 0)",
+    );
+    const fid = insFile.run("src/a.ts", "core").lastInsertRowid as number;
+    const aId = insSym.run(fid, "A").lastInsertRowid as number;
+    const xId = insSym.run(fid, "X").lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO edges (from_symbol_id, to_symbol_id, to_name, kind, confidence, call_line) VALUES (?, ?, 'A', 'CALLS', 1.0, NULL)",
+    ).run(xId, aId);
+
+    const callerTree: CallerTree = {
+      target: "A",
+      callers: [
+        {
+          name: "X",
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [],
+          callers: [],
+        },
+      ],
+    };
+    const calleeTree: CalleeTree = { source: "A", callees: [] };
+
+    const out = buildCausalChain(
+      {
+        anchor: { name: "A", file: "src/a.ts", line: 1, subsystem: "core" },
+        callerTree,
+        calleeTree,
+        db,
+      },
+      { topN: 5, useLegacyWeights: true },
+    );
+
+    const x = out.find((c) => c.name === "X");
+    expect(x).toBeDefined();
+    expect(x!.signals.dataflowScore).toBe(0);
+  });
+
+  it("dataflowScore is non-zero for paths through arg_bindings (week-7 gate)", () => {
+    // X is a producer flowing into the MID→A call as an identifier arg.
+    // pathBetween(X, A) crosses one ARG_BIND edge then one CALLS edge —
+    // argBindHops=1 → dataflowScore = DATAFLOW_PER_ARG_HOP = 0.75.
+    const db = openDb({});
+    const insFile = db.prepare(
+      "INSERT INTO files (path, language, subsystem, loc) VALUES (?, 'typescript', ?, 0)",
+    );
+    const insSym = db.prepare(
+      "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported) VALUES (?, ?, 'function', NULL, 1, 10, NULL, 0)",
+    );
+    const fid = insFile.run("src/a.ts", "core").lastInsertRowid as number;
+    const aId = insSym.run(fid, "A").lastInsertRowid as number;
+    const xId = insSym.run(fid, "X").lastInsertRowid as number;
+    const midId = insSym.run(fid, "MID").lastInsertRowid as number;
+    const edgeRes = db.prepare(
+      "INSERT INTO edges (from_symbol_id, to_symbol_id, to_name, kind, confidence, call_line) VALUES (?, ?, 'A', 'CALLS', 1.0, NULL)",
+    ).run(midId, aId);
+    const edgeId = edgeRes.lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO arg_bindings (edge_id, position, source_kind, source_text, source_symbol_id) VALUES (?, 0, 'identifier', 'X', ?)",
+    ).run(edgeId, xId);
+
+    const callerTree: CallerTree = {
+      target: "A",
+      callers: [
+        {
+          name: "X",
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [],
+          callers: [],
+        },
+      ],
+    };
+    const calleeTree: CalleeTree = { source: "A", callees: [] };
+
+    const out = buildCausalChain(
+      {
+        anchor: { name: "A", file: "src/a.ts", line: 1, subsystem: "core" },
+        callerTree,
+        calleeTree,
+        db,
+      },
+      { topN: 5, useLegacyWeights: true },
+    );
+
+    const x = out.find((c) => c.name === "X");
+    expect(x).toBeDefined();
+    expect(x!.signals.dataflowScore).toBeGreaterThan(0);
+    // One arg-binding hop → exactly DATAFLOW_PER_ARG_HOP (0.75).
+    expect(x!.signals.dataflowScore).toBeCloseTo(0.75, 5);
+  });
+
+  it("dataflowScore scales with number of arg-bind hops (week-7 gate)", () => {
+    // Build two chains of equal topology length but different ARG_BIND
+    // density:
+    //   ONE: X1 --ARG_BIND--> MID1 --CALLS--> A     (1 arg-bind hop)
+    //   TWO: X2 --ARG_BIND--> MID2 --ARG_BIND--> A  (2 arg-bind hops)
+    // Expect dataflowScore(X2) > dataflowScore(X1).
+    const db = openDb({});
+    const insFile = db.prepare(
+      "INSERT INTO files (path, language, subsystem, loc) VALUES (?, 'typescript', ?, 0)",
+    );
+    const insSym = db.prepare(
+      "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported) VALUES (?, ?, 'function', NULL, 1, 10, NULL, 0)",
+    );
+    const fid = insFile.run("src/a.ts", "core").lastInsertRowid as number;
+    const aId = insSym.run(fid, "A").lastInsertRowid as number;
+
+    // Chain ONE: 1 arg-bind hop.
+    const x1 = insSym.run(fid, "X1").lastInsertRowid as number;
+    const mid1 = insSym.run(fid, "MID1").lastInsertRowid as number;
+    const e1 = db.prepare(
+      "INSERT INTO edges (from_symbol_id, to_symbol_id, to_name, kind, confidence, call_line) VALUES (?, ?, 'A', 'CALLS', 1.0, NULL)",
+    ).run(mid1, aId).lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO arg_bindings (edge_id, position, source_kind, source_text, source_symbol_id) VALUES (?, 0, 'identifier', 'X1', ?)",
+    ).run(e1, x1);
+
+    // Chain TWO: 2 arg-bind hops. X2 flows into MID2's call to FINAL2,
+    // and MID2 flows into FINAL2's call to A. pathBetween from X2:
+    //   X2 -ARG_BIND-> MID2 -ARG_BIND-> FINAL2  ... but we want it to land at A.
+    // Easier model: X2 flows into MID2 (via call MID2→FINAL2) and MID2
+    // flows into A (via call A→<sink>). Then pathBetween(X2, A): X2 hops
+    // ARG_BIND to MID2, MID2 hops ARG_BIND to A. Two ARG_BIND hops, no CALLS.
+    const x2 = insSym.run(fid, "X2").lastInsertRowid as number;
+    const mid2 = insSym.run(fid, "MID2").lastInsertRowid as number;
+    const final2 = insSym.run(fid, "FINAL2").lastInsertRowid as number;
+    // Call MID2→FINAL2 with arg X2 (so X2 -ARG_BIND-> MID2).
+    const e2 = db.prepare(
+      "INSERT INTO edges (from_symbol_id, to_symbol_id, to_name, kind, confidence, call_line) VALUES (?, ?, 'FINAL2', 'CALLS', 1.0, NULL)",
+    ).run(mid2, final2).lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO arg_bindings (edge_id, position, source_kind, source_text, source_symbol_id) VALUES (?, 0, 'identifier', 'X2', ?)",
+    ).run(e2, x2);
+    // Call A→<sink> with arg MID2 (so MID2 -ARG_BIND-> A).
+    const sink = insSym.run(fid, "SINK").lastInsertRowid as number;
+    const e3 = db.prepare(
+      "INSERT INTO edges (from_symbol_id, to_symbol_id, to_name, kind, confidence, call_line) VALUES (?, ?, 'SINK', 'CALLS', 1.0, NULL)",
+    ).run(aId, sink).lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO arg_bindings (edge_id, position, source_kind, source_text, source_symbol_id) VALUES (?, 0, 'identifier', 'MID2', ?)",
+    ).run(e3, mid2);
+
+    const callerTree: CallerTree = {
+      target: "A",
+      callers: [
+        { name: "X1", file: "src/a.ts", line: 1, confidence: 1, recentChanges: [], callers: [] },
+        { name: "X2", file: "src/a.ts", line: 1, confidence: 1, recentChanges: [], callers: [] },
+      ],
+    };
+    const calleeTree: CalleeTree = { source: "A", callees: [] };
+
+    const out = buildCausalChain(
+      {
+        anchor: { name: "A", file: "src/a.ts", line: 1, subsystem: "core" },
+        callerTree,
+        calleeTree,
+        db,
+      },
+      { topN: 10, useLegacyWeights: true },
+    );
+
+    const cx1 = out.find((c) => c.name === "X1");
+    const cx2 = out.find((c) => c.name === "X2");
+    expect(cx1).toBeDefined();
+    expect(cx2).toBeDefined();
+    expect(cx1!.signals.dataflowScore).toBeGreaterThan(0);
+    expect(cx2!.signals.dataflowScore).toBeGreaterThan(
+      cx1!.signals.dataflowScore,
+    );
   });
 });

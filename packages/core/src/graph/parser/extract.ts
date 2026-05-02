@@ -119,9 +119,10 @@ export async function extractFile(opts: {
   const imports: ExtractedImport[] = [];
   // Param captures keyed by start index of the formal_parameters node so we
   // can attach them to the smallest enclosing function/method/const symbol
-  // after symbol extraction. TS only — Python query intentionally omits these.
-  const paramCaptures: Array<{ node: Parser.SyntaxNode; startIndex: number }> =
-    grammar === "python" ? [] : [];
+  // after symbol extraction. v6: enabled for Python too — receiver-type
+  // inference (resolve.ts) needs `type_text` on params (`def f(db: Conn)`)
+  // to resolve method calls on `db`.
+  const paramCaptures: Array<{ node: Parser.SyntaxNode; startIndex: number }> = [];
 
   for (const match of matches) {
     const idx = indexCaptures(match);
@@ -205,12 +206,11 @@ export async function extractFile(opts: {
     const calleeCap = idx.byCapture.get("call.callee")?.[0];
     if (calleeCap) {
       const objCap = idx.byCapture.get("call.object")?.[0];
-      // Walk up to the enclosing call_expression to read its arguments node.
-      // For TS, that's at most a couple of hops (callee → call_expression, or
-      // callee → member_expression → call_expression).
-      const callExpr = grammar === "python" ? null : findCallExpression(calleeCap.node);
+      // Walk up to the enclosing call_expression. TS: identifier → member
+      // → call_expression. Python: identifier → attribute → call.
+      const callExpr = findCallExpression(calleeCap.node, grammar);
       const argBindings: ExtractedArgBinding[] =
-        callExpr ? extractArgBindings(callExpr) : [];
+        callExpr ? extractArgBindings(callExpr, grammar) : [];
       pendingEdges.push({
         fromNode: calleeCap.node,
         toName: captureText(calleeCap),
@@ -223,8 +223,8 @@ export async function extractFile(opts: {
       continue;
     }
 
-    // 2b) Formal parameters node — TS only.
-    if (grammar !== "python") {
+    // 2b) Formal parameters node — TS + Python (v6).
+    {
       const paramsCap = idx.byCapture.get("symbol.params")?.[0];
       if (paramsCap) {
         paramCaptures.push({
@@ -308,9 +308,7 @@ export async function extractFile(opts: {
     edges,
     imports,
   };
-  if (grammar !== "python") {
-    out.symbolParams = attachParamsToSymbols(symbols, paramCaptures);
-  }
+  out.symbolParams = attachParamsToSymbols(symbols, paramCaptures, grammar);
 
   tree.delete();
   // query is cached at module level; do not delete.
@@ -366,12 +364,17 @@ function enclosingFunctionName(node: Parser.SyntaxNode): string | null {
   return null;
 }
 
-/** Walk up from a callee identifier/property to its enclosing call_expression. */
-function findCallExpression(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+/** Walk up from a callee identifier/property to its enclosing call expression.
+ * TS: target node type is `call_expression`. Python: `call`. We accept both
+ * regardless of grammar so the caller doesn't have to special-case. */
+function findCallExpression(
+  node: Parser.SyntaxNode,
+  _grammar: "typescript" | "tsx" | "python",
+): Parser.SyntaxNode | null {
   let cur: Parser.SyntaxNode | null = node.parent;
-  // At most 3 hops: identifier → member_expression → member_expression → call_expression.
+  // At most 4 hops: identifier → attribute|member_expression → ... → call.
   for (let i = 0; i < 4 && cur; i++) {
-    if (cur.type === "call_expression") return cur;
+    if (cur.type === "call_expression" || cur.type === "call") return cur;
     cur = cur.parent;
   }
   return null;
@@ -383,7 +386,10 @@ function findCallExpression(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
  * one `call`-kind binding for `bar(x)`, not two; the inner call gets its own
  * `arg_bindings` row via its own pendingEdge.
  */
-function extractArgBindings(callExpr: Parser.SyntaxNode): ExtractedArgBinding[] {
+function extractArgBindings(
+  callExpr: Parser.SyntaxNode,
+  grammar: "typescript" | "tsx" | "python",
+): ExtractedArgBinding[] {
   const argsNode = callExpr.childForFieldName("arguments");
   if (!argsNode) return [];
   const out: ExtractedArgBinding[] = [];
@@ -392,10 +398,25 @@ function extractArgBindings(callExpr: Parser.SyntaxNode): ExtractedArgBinding[] 
     const child = argsNode.namedChild(i);
     if (!child) continue;
     if (child.type === "comment") continue;
+    // Python `keyword_argument` (kwarg `foo=expr`): the value side is what
+    // actually flows into the callee param. Classify by the value's node
+    // type AND set source_text to the value's text so identifier-arg
+    // resolution can match `foo=athlete_id` against a local/param named
+    // `athlete_id` (not the literal string `foo=athlete_id` which never
+    // matches anything).
+    let classifyNode = child;
+    let sourceText = child.text.slice(0, 200);
+    if (grammar === "python" && child.type === "keyword_argument") {
+      const value = child.childForFieldName("value");
+      if (value) {
+        classifyNode = value;
+        sourceText = value.text.slice(0, 200);
+      }
+    }
     out.push({
       position,
-      sourceKind: classifyArgKind(child.type),
-      sourceText: child.text.slice(0, 200),
+      sourceKind: classifyArgKind(classifyNode.type),
+      sourceText,
     });
     position++;
   }
@@ -416,14 +437,25 @@ function classifyArgKind(nodeType: string): ArgSourceKind {
     case "undefined":
     case "template_string":
     case "regex":
+    // Python literal node types.
+    case "integer":
+    case "float":
+    case "concatenated_string":
+    case "none":
       return "literal";
     case "member_expression":
     case "subscript_expression":
+    // Python equivalents.
+    case "attribute":
+    case "subscript":
       return "member";
     case "call_expression":
     case "new_expression":
+    case "call":
       return "call";
     case "spread_element":
+    case "list_splat":
+    case "dictionary_splat":
       return "spread";
     default:
       return "other";
@@ -438,6 +470,7 @@ function classifyArgKind(nodeType: string): ArgSourceKind {
 function attachParamsToSymbols(
   symbols: SymbolWithRange[],
   paramCaptures: Array<{ node: Parser.SyntaxNode; startIndex: number }>,
+  grammar: "typescript" | "tsx" | "python",
 ): ExtractedSymbolParams[] {
   if (paramCaptures.length === 0) return [];
   const sorted = symbols
@@ -463,7 +496,10 @@ function attachParamsToSymbols(
     const key = `${owner.kind}:${owner.parentName ?? ""}:${owner.name}:${owner.startIndex}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const params = parseFormalParameters(cap.node);
+    const params =
+      grammar === "python"
+        ? parsePythonParameters(cap.node, owner)
+        : parseFormalParameters(cap.node);
     out.push({
       ownerKind: owner.kind,
       ownerName: owner.name,
@@ -472,6 +508,105 @@ function attachParamsToSymbols(
     });
   }
   return out;
+}
+
+/**
+ * Parse a Python `parameters` node into ExtractedParam[]. Children come in
+ * a few shapes:
+ *   - identifier: bare positional (`x`)
+ *   - typed_parameter: `x: T` (no default)
+ *   - default_parameter: `x = v` (no annotation)
+ *   - typed_default_parameter: `x: T = v`
+ *   - list_splat_pattern (`*args`), dictionary_splat_pattern (`**kw`)
+ *   - tuple_pattern (rare, deprecated)
+ *
+ * The first param of a method named `self` (or `cls`) gets its type_text
+ * set to the enclosing class name when the owner is a method — this is the
+ * single largest receiver-type signal in Python codebases. Without it,
+ * every `self.foo(...)` would still need the resolveSelfMethods fallback;
+ * with it, the same machinery resolveReceiverTypes uses for arbitrary
+ * receivers also handles `self` uniformly.
+ */
+function parsePythonParameters(
+  node: Parser.SyntaxNode,
+  owner: SymbolWithRange,
+): ExtractedParam[] {
+  const out: ExtractedParam[] = [];
+  let position = 0;
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (!child) continue;
+    let name: string | null = null;
+    let typeText: string | null = null;
+    let hasDefault = false;
+    switch (child.type) {
+      case "identifier":
+        name = child.text;
+        break;
+      case "typed_parameter": {
+        // First named child is the bound identifier (or splat pattern), second
+        // is the `type` field.
+        const id = child.namedChild(0);
+        if (id) name = stripPrefix(id.text, "*");
+        const tn = child.childForFieldName("type");
+        if (tn) typeText = trimTypeText(tn.text);
+        break;
+      }
+      case "default_parameter": {
+        const id = child.childForFieldName("name");
+        if (id) name = id.text;
+        hasDefault = true;
+        break;
+      }
+      case "typed_default_parameter": {
+        const id = child.childForFieldName("name");
+        if (id) name = id.text;
+        const tn = child.childForFieldName("type");
+        if (tn) typeText = trimTypeText(tn.text);
+        hasDefault = true;
+        break;
+      }
+      case "list_splat_pattern":
+      case "dictionary_splat_pattern": {
+        const id = child.namedChild(0);
+        if (id) name = id.text;
+        break;
+      }
+      default:
+        // Unknown / position-only marker etc. — skip.
+        break;
+    }
+    if (!name) {
+      position++;
+      continue;
+    }
+    // Method-receiver inference: if `owner` is a method and we're at position 0
+    // and the param is `self` or `cls`, set type_text to the enclosing class
+    // name. Non-method functions (top-level) get nothing.
+    if (
+      typeText === null &&
+      position === 0 &&
+      owner.kind === "method" &&
+      owner.parentName &&
+      (name === "self" || name === "cls")
+    ) {
+      typeText = owner.parentName;
+    }
+    out.push({ position, name, typeText, hasDefault });
+    position++;
+  }
+  return out;
+}
+
+function trimTypeText(raw: string): string | null {
+  let s = raw.trim();
+  if (s.startsWith(":")) s = s.slice(1).trim();
+  if (s.length > 200) s = s.slice(0, 200);
+  return s.length === 0 ? null : s;
+}
+
+function stripPrefix(s: string, p: string): string {
+  return s.startsWith(p) ? s.slice(p.length) : s;
 }
 
 function parseFormalParameters(node: Parser.SyntaxNode): ExtractedParam[] {
@@ -586,7 +721,7 @@ function resolveLocalEdges(
 }
 
 function stripRange(s: SymbolWithRange): ExtractedSymbol {
-  return {
+  const out: ExtractedSymbol = {
     name: s.name,
     kind: s.kind,
     parentName: s.parentName,
@@ -595,6 +730,10 @@ function stripRange(s: SymbolWithRange): ExtractedSymbol {
     signature: s.signature,
     exported: s.exported,
   };
+  if (s.typeText !== null && s.typeText !== undefined) {
+    out.typeText = s.typeText;
+  }
+  return out;
 }
 
 function stripQuotes(s: string): string {
@@ -653,25 +792,46 @@ function processLocalDeclaration(
   // Collect all binding identifier nodes from the LHS of the declaration.
   // For TS: walk each variable_declarator's name field.
   // For Python: walk the assignment's left field (skip subscript/attribute).
-  const names: Parser.SyntaxNode[] = [];
+  // We also record an optional type_text per name. For Python, an annotated
+  // assignment (`x: SomeClass = ...`) carries its annotation in the
+  // assignment's `type` field; for TS, the variable_declarator's `type` field
+  // (when present) is the annotation. Tuple-unpacking patterns (Python) and
+  // destructuring (TS) don't carry per-binding annotations — those locals get
+  // typeText=null.
+  const names: Array<{ node: Parser.SyntaxNode; typeText: string | null }> = [];
   if (grammar === "python") {
     const left = declNode.childForFieldName("left");
     if (!left) return;
     // Subscript/attribute targets are not locals; skip.
     if (left.type === "subscript" || left.type === "attribute") return;
-    collectBindingNames(left, names);
+    let typeText: string | null = null;
+    const typeNode = declNode.childForFieldName("type");
+    if (typeNode) typeText = trimTypeText(typeNode.text);
+    const idNodes: Parser.SyntaxNode[] = [];
+    collectBindingNames(left, idNodes);
+    // Per-binding typeText: annotation only applies to single-target
+    // assignments. Tuple/list unpacking gets null (annotations on those are a
+    // syntax error in Python anyway, so this is just defensive).
+    const apply = idNodes.length === 1 ? typeText : null;
+    for (const n of idNodes) names.push({ node: n, typeText: apply });
   } else {
     for (let i = 0; i < declNode.namedChildCount; i++) {
       const declarator = declNode.namedChild(i);
       if (!declarator || declarator.type !== "variable_declarator") continue;
       const name = declarator.childForFieldName("name");
       if (!name) continue;
-      collectBindingNames(name, names);
+      let typeText: string | null = null;
+      const typeNode = declarator.childForFieldName("type");
+      if (typeNode) typeText = trimTypeText(typeNode.text);
+      const idNodes: Parser.SyntaxNode[] = [];
+      collectBindingNames(name, idNodes);
+      const apply = idNodes.length === 1 ? typeText : null;
+      for (const n of idNodes) names.push({ node: n, typeText: apply });
     }
   }
 
-  for (const nameNode of names) {
-    emitLocal(nameNode, declNode, parentName, endLine, symbolsByKey);
+  for (const { node: nameNode, typeText } of names) {
+    emitLocal(nameNode, declNode, parentName, endLine, symbolsByKey, typeText);
   }
 }
 
@@ -724,8 +884,10 @@ function processLoopVarDeclaration(
     }
   }
 
+  // Loop iteration variables don't carry inline type annotations in either
+  // grammar — emit with typeText=null.
   for (const nameNode of names) {
-    emitLocal(nameNode, loopNode, parentName, endLine, symbolsByKey);
+    emitLocal(nameNode, loopNode, parentName, endLine, symbolsByKey, null);
   }
 }
 
@@ -801,6 +963,7 @@ function emitLocal(
   parentName: string,
   endLine: number,
   symbolsByKey: Map<string, SymbolWithRange>,
+  typeText: string | null,
 ): void {
   const name = nameNode.text;
   if (!name || name.length === 0) return;
@@ -820,5 +983,6 @@ function emitLocal(
     exported: false,
     startIndex: nameNode.startIndex,
     endIndex: nameNode.endIndex,
+    typeText,
   });
 }

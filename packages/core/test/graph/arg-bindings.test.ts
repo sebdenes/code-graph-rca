@@ -86,6 +86,40 @@ describe("arg_bindings extraction (TypeScript)", () => {
     expect(sym.parent_name).toBe("handleRequest");
   });
 
+  it("resolves self.helper() inside a Python class method to the right method symbol", async () => {
+    // py-receiver-types fixture: ServiceA.run() calls self.helper(); helper
+    // is a method on ServiceA. parsePythonParameters synthesises
+    // type_text='ServiceA' for `self`, so resolveReceiverTypes resolves the
+    // call to ServiceA.helper without needing the resolveSelfMethods fallback.
+    const PY_RT = join(here, "..", "fixtures", "py-receiver-types");
+    const r = await indexScope({ repoRoot: PY_RT });
+    const row = r.db
+      .prepare(
+        `SELECT ts.id AS to_id, ts.kind AS to_kind, tp.name AS to_parent,
+                e.resolution_kind AS resolution_kind
+           FROM edges e
+           JOIN symbols fs ON fs.id = e.from_symbol_id
+           LEFT JOIN symbols ts ON ts.id = e.to_symbol_id
+           LEFT JOIN symbols tp ON tp.id = ts.parent_id
+          WHERE fs.name = 'run'
+            AND e.to_name = 'helper'
+            AND e.kind = 'CALLS'`,
+      )
+      .get() as
+        | {
+            to_id: number | null;
+            to_kind: string | null;
+            to_parent: string | null;
+            resolution_kind: string | null;
+          }
+        | undefined;
+    expect(row).toBeDefined();
+    expect(row!.to_id).not.toBeNull();
+    expect(row!.to_kind).toBe("method");
+    expect(row!.to_parent).toBe("ServiceA");
+    expect(row!.resolution_kind).toBeNull();
+  });
+
   it("resolves an identifier arg to a kind='local' source symbol in the caller", async () => {
     // localCarrier: const payload = "hello"; return relay(payload);
     // `payload` is a top-level local in localCarrier's body; the arg binding

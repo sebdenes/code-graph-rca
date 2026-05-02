@@ -44,6 +44,8 @@ export interface SymbolRow {
   end_line: number;
   signature: string | null;
   exported: 0 | 1;
+  /** v6: raw type annotation on params/locals; NULL elsewhere. */
+  type_text: string | null;
 }
 
 export type ResolutionKind =
@@ -80,6 +82,14 @@ export interface ExtractedSymbol {
   endLine: number;
   signature: string | null;
   exported: boolean;
+  /**
+   * Raw type-annotation source text for `kind='local'` rows (and, when
+   * available, `kind='param'` rows derived from this symbol). Populated
+   * for Python annotated assignments (`x: SomeClass = ...`) and for-loop
+   * type comments where surfaced. NULL when no annotation is present.
+   * Powers receiver-type inference in resolve.ts.
+   */
+  typeText?: string | null;
 }
 
 export interface ExtractedEdge {

@@ -166,7 +166,7 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
     "INSERT INTO files (path, language, subsystem, loc) VALUES (?, ?, ?, ?)",
   );
   const insertSymbol = db.prepare(
-    "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported, type_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
   );
   const insertEdge = db.prepare(
     "INSERT INTO edges (from_symbol_id, to_symbol_id, to_name, kind, confidence, call_line) VALUES (?, NULL, ?, ?, ?, ?)",
@@ -186,7 +186,7 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
   // self-index. start_line/end_line copy the function's range so recency
   // hydration for a param degrades into the enclosing function.
   const insertParamSymbol = db.prepare(
-    "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported) VALUES (?, ?, 'param', ?, ?, ?, NULL, 0)",
+    "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported, type_text) VALUES (?, ?, 'param', ?, ?, ?, NULL, 0, ?)",
   );
   const insertArgBinding = db.prepare(
     "INSERT INTO arg_bindings (edge_id, position, source_kind, source_text, source_symbol_id) VALUES (?, ?, ?, ?, NULL)",
@@ -211,6 +211,9 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
           s.endLine,
           s.signature,
           s.exported ? 1 : 0,
+          // Classes/interfaces don't carry type annotations themselves —
+          // type_text is meaningful only on params/locals.
+          null,
         );
         symbolIdsByKey.set(`${s.kind}:${s.name}`, res.lastInsertRowid as number);
       }
@@ -229,6 +232,8 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
           s.endLine,
           s.signature,
           s.exported ? 1 : 0,
+          // Locals carry their inline annotation; everything else is null.
+          s.kind === "local" && s.typeText ? s.typeText : null,
         );
         symbolIdsByKey.set(
           s.parentName ? `${s.kind}:${s.parentName}.${s.name}` : `${s.kind}:${s.name}`,
@@ -294,12 +299,16 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
               p.hasDefault ? 1 : 0,
             );
             if (range) {
+              // Mirror the param's annotation onto the synthetic kind='param'
+              // symbol row so resolveReceiverTypes (resolve.ts) can read
+              // type_text directly off `symbols` without joining `params`.
               insertParamSymbol.run(
                 fileId,
                 p.name,
                 symbolId,
                 range.start_line,
                 range.end_line,
+                p.typeText ?? null,
               );
             }
           }

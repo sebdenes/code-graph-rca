@@ -46,6 +46,49 @@ describe("cli smoke", () => {
     expect(r.stdout).toContain("--prompt");
   });
 
+  it("default rca (table) does NOT call the prompt formatter", () => {
+    // Proxy for "runRca was called with format='structured'": none of the
+    // markdown headings the prompt formatter emits should appear in stdout.
+    // If cmdRca regresses to the default `format: 'prompt'` path, the
+    // runner will still build the markdown — but the table renderer
+    // discards it, so this test alone wouldn't catch a perf regression.
+    // The stronger check is the --json one below: structured runs leave
+    // `result.prompt === ""`.
+    const r = run(["rca", "symbol:ingest", "--repo", PY_FIXTURE]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain("# Failure context");
+    expect(r.stdout).not.toContain("## First hypothesis");
+    expect(r.stdout).not.toContain("## Top causal candidates");
+    expect(r.stdout).not.toContain("## Graph context");
+    expect(r.stdout).not.toContain("# Root-cause-analysis protocol");
+  });
+
+  it("rca --format=table is an alias for the default table output", () => {
+    const r = run(["rca", "symbol:ingest", "--repo", PY_FIXTURE, "--format=table"]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("CGRCA");
+    expect(r.stdout).toContain("anchor:");
+    expect(r.stdout).not.toContain("Root-cause-analysis protocol");
+  });
+
+  it("rca --format=prompt emits the markdown protocol like --prompt", () => {
+    const r = run(["rca", "symbol:ingest", "--repo", PY_FIXTURE, "--format=prompt"]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("Failure context");
+    expect(r.stdout).toContain("Root-cause-analysis protocol");
+  });
+
+  it("rca --format=json behaves like --json (prompt populated for compat)", () => {
+    const r = run(["rca", "symbol:ingest", "--repo", PY_FIXTURE, "--format=json"]);
+    expect(r.status).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.primarySymbol).toBe("ingest");
+    // --json/--format=json keep prompt populated so existing consumers
+    // (which serialized the whole RcaResult pre-week-6) don't break.
+    expect(typeof parsed.prompt).toBe("string");
+    expect(parsed.prompt.length).toBeGreaterThan(0);
+  });
+
   it("rca --prompt on py-package emits the legacy markdown protocol", () => {
     const r = run(["rca", "symbol:ingest", "--repo", PY_FIXTURE, "--prompt"]);
     expect(r.status).toBe(0);

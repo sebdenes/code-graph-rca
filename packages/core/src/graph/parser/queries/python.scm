@@ -102,6 +102,15 @@
       attribute: (identifier) @call.object)
     attribute: (identifier) @call.callee))
 
+; ---------------- Params ----------------
+; Python function/method formal parameters. The extractor walks children to
+; enumerate (name, type_text, has_default) per slot. Receiver-type inference
+; (resolve.ts) leans on captured type_text — `def f(self, db: Conn): db.exec(...)`
+; resolves `db.exec` to the `exec` method on `Conn` when `Conn` is in scope.
+
+(function_definition
+  parameters: (parameters) @symbol.params)
+
 ; ---------------- Imports ----------------
 
 ; import m

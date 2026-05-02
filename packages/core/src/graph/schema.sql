@@ -22,7 +22,14 @@ CREATE TABLE IF NOT EXISTS symbols (
   start_line INTEGER NOT NULL,
   end_line INTEGER NOT NULL,
   signature TEXT,
-  exported INTEGER NOT NULL DEFAULT 0
+  exported INTEGER NOT NULL DEFAULT 0,
+  -- v6: raw type-annotation text on `kind='param'` and `kind='local'` rows.
+  -- Captured for Python (`x: SomeClass = ...`, `def f(x: SomeClass)`) and
+  -- TypeScript (parameter `: SomeType`). Powers receiver-type inference in
+  -- resolve.ts: when an unresolved `obj.method(...)` call has a receiver
+  -- whose type_text matches a known class symbol, the call resolves to that
+  -- class's method. NULL when unknown / not annotated.
+  type_text TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);

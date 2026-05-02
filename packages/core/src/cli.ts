@@ -46,10 +46,11 @@ Commands:
 
 Common options:
   --repo <path>             Repo root (default: cwd).
-  --json                    Emit JSON instead of human output (rca only).
-  --prompt                  rca: emit the full LLM-grounding markdown prompt
-                            (legacy behavior). Default is a ranked candidate
-                            table.
+  --format <shape>          rca: pick the output shape (table|prompt|json).
+                            Default is table. Subsumes --json and --prompt.
+  --json                    rca: alias for --format=json. (kept for compat)
+  --prompt                  rca: alias for --format=prompt — emit the full
+                            LLM-grounding markdown prompt. (kept for compat)
   -d, --depth <n>           Depth for callers/callees (default 2 / 1).
   --since <days>            Days for changed (default 90).
   --max-files <n>           Scope budget for rca (default 200).
@@ -96,6 +97,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       flags.topN = argv[++i] ?? "";
     } else if (a === "--legacy-weights") {
       flags["legacy-weights"] = true;
+    } else if (a === "--format") {
+      flags.format = argv[++i] ?? "";
+    } else if (a.startsWith("--format=")) {
+      flags.format = a.slice("--format=".length);
     } else if (a.startsWith("--")) {
       flags[a.slice(2)] = true;
     } else {
@@ -304,10 +309,25 @@ async function cmdRca(args: ParsedArgs): Promise<number> {
       ? Number(args.flags.topN)
       : undefined;
   const useLegacyWeights = args.flags["legacy-weights"] === true;
+
+  // Resolve the output shape. `--format` is the modern flag; `--prompt` and
+  // `--json` are kept as aliases so existing scripts (and the help banner
+  // baseline tests) keep working. Unknown `--format` values fall back to the
+  // default table — we don't error out, since the legacy aliases coexist.
+  const formatFlag =
+    typeof args.flags.format === "string" ? args.flags.format : "";
+  const wantsPrompt = args.flags.prompt === true || formatFlag === "prompt";
+  const wantsJson = args.flags.json === true || formatFlag === "json";
+
+  // Skip prompt-formatting on the default (table) path — the runner builds a
+  // multi-section markdown blob we'd otherwise discard. JSON consumers keep
+  // the prompt populated for backward-compat: pre-week-6 callers serialized
+  // the whole RcaResult and depended on `prompt` being non-empty.
   const result = await runRca({
     failureScope: failure,
     repoRoot,
     budget,
+    format: wantsPrompt || wantsJson ? "prompt" : "structured",
     ...(persist ? { persist } : {}),
     ...(topN !== undefined && Number.isFinite(topN) ? { topN } : {}),
     ...(useLegacyWeights ? { useLegacyWeights: true } : {}),
@@ -344,9 +364,9 @@ async function cmdRca(args: ParsedArgs): Promise<number> {
     }
   }
 
-  if (args.flags.json) {
+  if (wantsJson) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-  } else if (args.flags.prompt) {
+  } else if (wantsPrompt) {
     // Legacy behavior: dump the full markdown protocol for paste-into-LLM.
     process.stdout.write(result.prompt);
     process.stdout.write("\n");

@@ -93,11 +93,229 @@ export function resolveEdges(db: Db, repoRoot: string): void {
   // unresolved edge is indistinguishable at confidence=0.5.
   classifyUnresolved(db, repoRoot, filesById);
 
-  // 6. Resolve `arg_bindings.source_symbol_id` for identifier-typed args.
+  // 6. Receiver-type inference (v6). For unresolved CALLS edges classified as
+  // `instance_method`, look up the receiver symbol in the caller's scope; if
+  // it's a kind='local'|'param' with a type_text matching a known class, and
+  // the class has exactly one method with the call's to_name, resolve. Also
+  // covers `self.method(...)` because parsePythonParameters synthesises
+  // type_text=<enclosing-class> for `self`/`cls`. Reclassifies the edge as
+  // resolved (resolution_kind = NULL) when a unique match is found.
+  resolveReceiverTypes(db, repoRoot, filesById);
+
+  // 7. Resolve `arg_bindings.source_symbol_id` for identifier-typed args.
   // Best-effort: looks for a same-file symbol (param of the caller, local
   // const/let, module-level export) whose name matches the arg's
   // source_text. Doesn't try cross-file unless an import binds the name.
   resolveArgBindingSources(db);
+}
+
+/**
+ * Receiver-type inference, v6. Finds unresolved `obj.method(...)` calls
+ * where:
+ *   1. The call site source text contains `<receiver>.<to_name>(`.
+ *   2. `<receiver>` is a kind='local' or kind='param' symbol scoped to the
+ *      caller (parent_id == caller_id).
+ *   3. That symbol's `type_text` resolves to a known kind='class' symbol.
+ *      Type_text is matched as a bare identifier (`Conn`) — generic
+ *      wrappers like `Optional[Conn]`, `Conn | None`, `List[Conn]` are
+ *      stripped to the leading bare identifier first.
+ *   4. The class has exactly one method named `to_name`. Multiple matches
+ *      (overloads, inheritance) → leave unresolved; out of scope.
+ *
+ * Self-receiver fast path: when the receiver text is `self` or `cls` and
+ * the caller is a method, the param-as-symbol row for `self` already has
+ * type_text = enclosing class name (set by parsePythonParameters), so
+ * Python `self.foo(...)` falls out of the same machinery as
+ * `db.execute(...)`. No special-case branch in this function — it's all
+ * one lookup table.
+ */
+function resolveReceiverTypes(
+  db: Db,
+  repoRoot: string,
+  filesById: Map<number, FileRow>,
+): void {
+  const rows = db
+    .prepare(
+      `SELECT e.id AS edge_id, e.to_name AS to_name, e.call_line AS call_line,
+              fs.id AS caller_id, fs.file_id AS file_id
+         FROM edges e
+         JOIN symbols fs ON fs.id = e.from_symbol_id
+        WHERE e.to_symbol_id IS NULL
+          AND e.kind = 'CALLS'
+          AND e.resolution_kind = 'instance_method'`,
+    )
+    .all() as Array<{
+      edge_id: number;
+      to_name: string;
+      call_line: number | null;
+      caller_id: number;
+      file_id: number;
+    }>;
+  if (rows.length === 0) return;
+
+  // Source caching — same shape as classifyUnresolved.
+  const sourceCache = new Map<number, string[] | null>();
+  function getLine(fileId: number, lineNum: number | null): string | null {
+    if (lineNum === null || lineNum <= 0) return null;
+    let lines = sourceCache.get(fileId);
+    if (lines === undefined) {
+      const f = filesById.get(fileId);
+      if (!f) {
+        sourceCache.set(fileId, null);
+        return null;
+      }
+      try {
+        const text = readFileSync(join(repoRoot, f.path), "utf8");
+        lines = text.split(/\r?\n/);
+      } catch {
+        lines = null;
+      }
+      sourceCache.set(fileId, lines);
+    }
+    if (!lines) return null;
+    return lines[lineNum - 1] ?? null;
+  }
+
+  // Class lookup index: class_name → list of class symbols (across the repo).
+  // We dedupe on (file_id, name) so two identically-named classes in
+  // different files surface as ambiguous and are skipped (one match wins
+  // only when there's exactly one class with that bare name in scope).
+  const classRows = db
+    .prepare(
+      "SELECT id, file_id, name FROM symbols WHERE kind = 'class' OR kind = 'interface'",
+    )
+    .all() as Array<{ id: number; file_id: number; name: string }>;
+  const classesByName = new Map<string, Array<{ id: number; file_id: number }>>();
+  for (const c of classRows) {
+    let bucket = classesByName.get(c.name);
+    if (!bucket) {
+      bucket = [];
+      classesByName.set(c.name, bucket);
+    }
+    bucket.push({ id: c.id, file_id: c.file_id });
+  }
+
+  const findReceiverSym = db.prepare(
+    `SELECT type_text FROM symbols
+      WHERE parent_id = ? AND name = ? AND kind IN ('param', 'local')
+        AND type_text IS NOT NULL
+      LIMIT 1`,
+  );
+  const findMethodOnClass = db.prepare(
+    "SELECT id FROM symbols WHERE parent_id = ? AND kind = 'method' AND name = ?",
+  );
+  const updateResolved = db.prepare(
+    "UPDATE edges SET to_symbol_id = ?, confidence = 0.8, resolution_kind = NULL WHERE id = ?",
+  );
+
+  let resolved = 0;
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      const line = getLine(r.file_id, r.call_line);
+      if (line === null) continue;
+      const receiver = parseReceiverFromCallLine(line, r.to_name);
+      if (!receiver) continue;
+      // Look up receiver in caller's scope.
+      const recRow = findReceiverSym.get(r.caller_id, receiver) as
+        | { type_text: string | null }
+        | undefined;
+      if (!recRow || !recRow.type_text) continue;
+      const className = bareTypeIdent(recRow.type_text);
+      if (!className) continue;
+      const classes = classesByName.get(className);
+      if (!classes || classes.length === 0) continue;
+      // Look for the method on each candidate class. Across-class duplicates
+      // (same method name on multiple identically-named classes in different
+      // files) → skip; we only resolve when exactly one method matches.
+      const matches: Array<{ id: number }> = [];
+      for (const c of classes) {
+        const ms = findMethodOnClass.all(c.id, r.to_name) as Array<{ id: number }>;
+        for (const m of ms) matches.push(m);
+      }
+      if (matches.length !== 1) continue;
+      updateResolved.run(matches[0]!.id, r.edge_id);
+      resolved++;
+    }
+  });
+  tx();
+  // Resolved count is observable through the DB; no logging here so the
+  // resolution pass stays silent (other passes don't log either).
+  void resolved;
+}
+
+/**
+ * Find the receiver text in a `<receiver>.<to_name>(` substring on a source
+ * line. Returns null when no such pattern is found, or when the receiver is
+ * a complex expression (chained attributes, subscripts, calls) that we
+ * deliberately don't try to handle. Examples that resolve:
+ *   `self.do_thing()` → "self"
+ *   `db.execute(sql)` → "db"
+ *   `cursor.fetchall()` → "cursor"
+ * Examples that don't (returns null):
+ *   `self._db.commit()`        — chained attribute (out of scope)
+ *   `users[0].rename(...)`      — subscript receiver
+ *   `make_db().execute(...)`    — call receiver
+ *
+ * Could later be extended to walk through chained `.attr.attr` if we tie
+ * the leading attribute to a known class type, but the simple identifier
+ * receiver alone covers most of the long tail in athlai (`db.execute`,
+ * `cursor.fetchall`, `session.commit`).
+ */
+function parseReceiverFromCallLine(
+  line: string,
+  toName: string,
+): string | null {
+  // Locate the literal `.<toName>(` substring; if it appears multiple times
+  // on the same line, we only handle the first to keep the heuristic
+  // deterministic. Multi-call lines are rare in real code.
+  const safe = toName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = line.match(new RegExp(`(\\b[A-Za-z_][A-Za-z0-9_]*)\\.${safe}\\s*\\(`));
+  if (!match) return null;
+  // match[1] is the immediately-preceding bare identifier. If the character
+  // BEFORE that identifier is also a `.` or `]` or `)`, the receiver is
+  // actually a chain — bail out and leave unresolved.
+  const idStart = (match.index ?? 0);
+  if (idStart > 0) {
+    const prev = line[idStart - 1];
+    if (prev === "." || prev === "]" || prev === ")") return null;
+  }
+  return match[1] ?? null;
+}
+
+/**
+ * Strip generic wrappers and unions from a type annotation, returning the
+ * leading bare class identifier. Examples:
+ *   `Conn`                  → "Conn"
+ *   `Optional[Conn]`        → "Conn"
+ *   `Conn | None`           → "Conn"
+ *   `list[Conn]`            → null (we don't unwrap collection types —
+ *                                   the receiver is the list, not a Conn)
+ *   `"Conn"` (forward ref)  → "Conn"
+ *   `Tuple[int, str]`       → null (no single class)
+ *
+ * Conservative on purpose: receiver-type inference resolves only when we
+ * can name *one* class with confidence. Anything fancier risks misresolving
+ * to the wrong method.
+ */
+function bareTypeIdent(typeText: string): string | null {
+  let s = typeText.trim();
+  // Forward-ref string: "ClassName" → ClassName.
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  // Optional[T], Union[T, None] — strip the Optional wrapper.
+  const optMatch = s.match(/^Optional\[(.+)\]$/);
+  if (optMatch && optMatch[1]) s = optMatch[1].trim();
+  // T | None / None | T — strip the None side. Multi-arm unions stay as-is
+  // and fail the bare-ident check below.
+  const pipeParts = s.split("|").map((p) => p.trim()).filter((p) => p && p !== "None");
+  if (pipeParts.length === 1) s = pipeParts[0]!;
+  // Plain bare ident? Accept.
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return s;
+  return null;
 }
 
 /**

@@ -24,8 +24,13 @@ const SCHEMA_PATH = join(here, "schema.sql");
  * - v5: adds `blob_cache` table — (file_path, blob_sha) → ExtractedFile
  *   JSON. Lets cgrcad skip tree-sitter on files whose `git hash-object`
  *   already matches a cached row.
+ * - v6: adds `symbols.type_text` column. Stores the raw type-annotation
+ *   source text on `kind='param'` and `kind='local'` rows so
+ *   resolve.ts can do light-touch receiver-type inference: an
+ *   `obj.method(...)` call whose receiver `obj` is a local/param of a
+ *   known class type now resolves to that class's method.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export type Db = Database.Database;
 
