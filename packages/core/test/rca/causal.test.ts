@@ -375,13 +375,33 @@ describe("buildCausalChain", () => {
     const a = buildCausalChain(input, { topN: 5 });
     const b = buildCausalChain(input, { topN: 5 });
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+
+    // Determinism also holds under the legacy-weights A/B path, and the
+    // two paths produce different orderings/scores (otherwise the toggle
+    // would be a no-op). This guards both: the deterministic property
+    // *and* that the toggle actually changes behavior.
+    const aLegacy = buildCausalChain(input, { topN: 5, useLegacyWeights: true });
+    const bLegacy = buildCausalChain(input, { topN: 5, useLegacyWeights: true });
+    expect(JSON.stringify(aLegacy)).toBe(JSON.stringify(bLegacy));
+    // The score values must differ between paths (legacy uses bucket sums,
+    // calibrated applies learned multipliers). Compare aggregate scores.
+    const scoresCalibrated = a.map((c) => c.score).join(",");
+    const scoresLegacy = aLegacy.map((c) => c.score).join(",");
+    expect(scoresCalibrated).not.toBe(scoresLegacy);
   });
 
-  it("megacommit bystander does NOT beat the anchor", () => {
+  it("megacommit bystander does NOT beat the anchor (legacy weights)", () => {
     // Anchor A and a direct callee D both touched in the SAME megacommit, plus
     // ten other bystanders touched in that commit (12-member cluster). With the
     // demoted co-change weight (per-member ~ 2 / log2(13) ≈ 0.54) the bystander
     // cannot leapfrog the anchor's recency 3 + proximity 2.5 = 5.5.
+    //
+    // Asserted under `useLegacyWeights: true` because this test is about the
+    // bucket-shape gating (megacommit demotion + proximity boost), not about
+    // the calibrated multipliers — under calibrated weights proximity has
+    // multiplier 0 (proximity is constant within the unanchored candidate
+    // sets the calibration was fit on), so the legacy bucket assumption no
+    // longer applies.
     const filesSpec: Array<{ path: string; subsystem: string }> = [
       { path: "src/a.ts", subsystem: "core" },
     ];
@@ -437,7 +457,7 @@ describe("buildCausalChain", () => {
         calleeTree,
         db,
       },
-      { topN: 12 },
+      { topN: 12, useLegacyWeights: true },
     );
 
     const byName = new Map(out.map((c) => [c.name, c]));
@@ -515,5 +535,60 @@ describe("buildCausalChain", () => {
     const fatIdx = out.findIndex((c) => c.name === "FAT");
     const tinyIdx = out.findIndex((c) => c.name === "TINY");
     expect(fatIdx).toBeLessThan(tinyIdx);
+  });
+
+  it("calibrated weights — score regression baseline (locks in the 2026-05-02 fit)", () => {
+    // Tiny fixture exercising every signal so the scored sum is sensitive
+    // to all six learned multipliers. If anyone retunes the weights this
+    // assertion will fail loudly — pointing them at tools/calibration/fit.mjs.
+    const db = buildDb({
+      files: [{ path: "src/a.ts", subsystem: "core" }],
+      symbols: [
+        { file: "src/a.ts", name: "A" },
+        { file: "src/a.ts", name: "B" },
+      ],
+      unresolvedEdgesFrom: [
+        { file: "src/a.ts", name: "B", targets: ["x", "y"] },
+      ],
+    });
+    const callerTree: CallerTree = {
+      target: "A",
+      callers: [
+        {
+          name: "B",
+          file: "src/a.ts",
+          line: 1,
+          confidence: 1,
+          recentChanges: [rc("sha-b", 3)],
+          callers: [],
+        },
+      ],
+    };
+    const calleeTree: CalleeTree = { source: "A", callees: [] };
+    const input = {
+      anchor: {
+        name: "A",
+        file: "src/a.ts" as string | null,
+        line: 1 as number | null,
+        subsystem: "core" as string | null,
+      },
+      callerTree,
+      calleeTree,
+      db,
+    };
+    const calibrated = buildCausalChain(input, { topN: 5 });
+    const legacy = buildCausalChain(input, { topN: 5, useLegacyWeights: true });
+
+    // Sanity: same candidate set, same ordering hint, but different scores.
+    const cb = calibrated.find((c) => c.name === "B");
+    const lb = legacy.find((c) => c.name === "B");
+    expect(cb).toBeDefined();
+    expect(lb).toBeDefined();
+    // Calibrated: 0.0834*3 + 0*1 + 0.2021*1 + 0 + 0 + ~0.2021 ≈ 0.658 (loc=10).
+    // Legacy:    1*3 + 1*1 + 1*1 + 0 + 0 + ~0.2021                 ≈ 5.202.
+    expect(cb!.score).toBeLessThan(1.5);
+    expect(lb!.score).toBeGreaterThan(4.5);
+    // Multipliers must drive a measurable gap between the two paths.
+    expect(Math.abs(cb!.score - lb!.score)).toBeGreaterThan(2);
   });
 });

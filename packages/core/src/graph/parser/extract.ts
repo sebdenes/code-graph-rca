@@ -1,10 +1,14 @@
 import Parser from "web-tree-sitter";
 import { getCompiledQuery, loadLanguage, newParser } from "./loader.js";
 import type {
+  ArgSourceKind,
+  ExtractedArgBinding,
   ExtractedEdge,
   ExtractedFile,
   ExtractedImport,
+  ExtractedParam,
   ExtractedSymbol,
+  ExtractedSymbolParams,
   Language,
   SymbolKind,
 } from "../../types.js";
@@ -95,8 +99,14 @@ export async function extractFile(opts: {
     kind: ExtractedEdge["kind"];
     confidence: number;
     callLine: number;
+    argBindings?: ExtractedArgBinding[];
   }> = [];
   const imports: ExtractedImport[] = [];
+  // Param captures keyed by start index of the formal_parameters node so we
+  // can attach them to the smallest enclosing function/method/const symbol
+  // after symbol extraction. TS only — Python query intentionally omits these.
+  const paramCaptures: Array<{ node: Parser.SyntaxNode; startIndex: number }> =
+    grammar === "python" ? [] : [];
 
   for (const match of matches) {
     const idx = indexCaptures(match);
@@ -137,6 +147,12 @@ export async function extractFile(opts: {
     const calleeCap = idx.byCapture.get("call.callee")?.[0];
     if (calleeCap) {
       const objCap = idx.byCapture.get("call.object")?.[0];
+      // Walk up to the enclosing call_expression to read its arguments node.
+      // For TS, that's at most a couple of hops (callee → call_expression, or
+      // callee → member_expression → call_expression).
+      const callExpr = grammar === "python" ? null : findCallExpression(calleeCap.node);
+      const argBindings: ExtractedArgBinding[] =
+        callExpr ? extractArgBindings(callExpr) : [];
       pendingEdges.push({
         fromNode: calleeCap.node,
         toName: captureText(calleeCap),
@@ -144,8 +160,21 @@ export async function extractFile(opts: {
         kind: "CALLS",
         confidence: 1.0,
         callLine: calleeCap.node.startPosition.row + 1,
+        argBindings,
       });
       continue;
+    }
+
+    // 2b) Formal parameters node — TS only.
+    if (grammar !== "python") {
+      const paramsCap = idx.byCapture.get("symbol.params")?.[0];
+      if (paramsCap) {
+        paramCaptures.push({
+          node: paramsCap.node,
+          startIndex: paramsCap.node.startIndex,
+        });
+        continue;
+      }
     }
 
     // 3) Extends / implements
@@ -221,10 +250,160 @@ export async function extractFile(opts: {
     edges,
     imports,
   };
+  if (grammar !== "python") {
+    out.symbolParams = attachParamsToSymbols(symbols, paramCaptures);
+  }
 
   tree.delete();
   // query is cached at module level; do not delete.
   parser.delete();
+  return out;
+}
+
+/** Walk up from a callee identifier/property to its enclosing call_expression. */
+function findCallExpression(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  let cur: Parser.SyntaxNode | null = node.parent;
+  // At most 3 hops: identifier → member_expression → member_expression → call_expression.
+  for (let i = 0; i < 4 && cur; i++) {
+    if (cur.type === "call_expression") return cur;
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/**
+ * Walk the `arguments` child of a call_expression and classify each top-level
+ * argument expression. We deliberately don't recurse — `foo(bar(x))` records
+ * one `call`-kind binding for `bar(x)`, not two; the inner call gets its own
+ * `arg_bindings` row via its own pendingEdge.
+ */
+function extractArgBindings(callExpr: Parser.SyntaxNode): ExtractedArgBinding[] {
+  const argsNode = callExpr.childForFieldName("arguments");
+  if (!argsNode) return [];
+  const out: ExtractedArgBinding[] = [];
+  let position = 0;
+  for (let i = 0; i < argsNode.namedChildCount; i++) {
+    const child = argsNode.namedChild(i);
+    if (!child) continue;
+    if (child.type === "comment") continue;
+    out.push({
+      position,
+      sourceKind: classifyArgKind(child.type),
+      sourceText: child.text.slice(0, 200),
+    });
+    position++;
+  }
+  return out;
+}
+
+function classifyArgKind(nodeType: string): ArgSourceKind {
+  switch (nodeType) {
+    case "identifier":
+    case "shorthand_property_identifier":
+    case "this":
+      return "identifier";
+    case "string":
+    case "number":
+    case "true":
+    case "false":
+    case "null":
+    case "undefined":
+    case "template_string":
+    case "regex":
+      return "literal";
+    case "member_expression":
+    case "subscript_expression":
+      return "member";
+    case "call_expression":
+    case "new_expression":
+      return "call";
+    case "spread_element":
+      return "spread";
+    default:
+      return "other";
+  }
+}
+
+/**
+ * For each captured `formal_parameters` node, find the smallest enclosing
+ * symbol (function/method/const) and record its parameter list. Binding by
+ * range — same strategy used to attach call edges to their enclosing symbol.
+ */
+function attachParamsToSymbols(
+  symbols: SymbolWithRange[],
+  paramCaptures: Array<{ node: Parser.SyntaxNode; startIndex: number }>,
+): ExtractedSymbolParams[] {
+  if (paramCaptures.length === 0) return [];
+  const sorted = symbols
+    .slice()
+    .sort((a, b) => a.endIndex - a.startIndex - (b.endIndex - b.startIndex));
+  const out: ExtractedSymbolParams[] = [];
+  // Dedupe per (kind, parentName, name) — multiple symbol matches for the
+  // same declaration (e.g. exported wrapper) collapse to one params row.
+  const seen = new Set<string>();
+  for (const cap of paramCaptures) {
+    let owner: SymbolWithRange | null = null;
+    for (const s of sorted) {
+      if (
+        s.startIndex <= cap.startIndex &&
+        cap.startIndex <= s.endIndex &&
+        (s.kind === "function" || s.kind === "method" || s.kind === "const")
+      ) {
+        owner = s;
+        break;
+      }
+    }
+    if (!owner) continue;
+    const key = `${owner.kind}:${owner.parentName ?? ""}:${owner.name}:${owner.startIndex}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const params = parseFormalParameters(cap.node);
+    out.push({
+      ownerKind: owner.kind,
+      ownerName: owner.name,
+      ownerParentName: owner.parentName,
+      params,
+    });
+  }
+  return out;
+}
+
+function parseFormalParameters(node: Parser.SyntaxNode): ExtractedParam[] {
+  const out: ExtractedParam[] = [];
+  let position = 0;
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (!child) continue;
+    const kind = child.type;
+    if (
+      kind !== "required_parameter" &&
+      kind !== "optional_parameter" &&
+      kind !== "rest_pattern" &&
+      kind !== "rest_parameter"
+    ) {
+      continue;
+    }
+    const patternNode =
+      child.childForFieldName("pattern") ?? child.namedChild(0);
+    const name = patternNode ? patternNode.text.slice(0, 100) : "";
+    if (!name) {
+      position++;
+      continue;
+    }
+    const typeNode = child.childForFieldName("type");
+    // type field on TS yields `type_annotation`, whose text starts with ": ".
+    let typeText: string | null = null;
+    if (typeNode) {
+      const raw = typeNode.text.trim();
+      typeText = raw.startsWith(":") ? raw.slice(1).trim() : raw;
+      if (typeText.length > 200) typeText = typeText.slice(0, 200);
+      if (typeText.length === 0) typeText = null;
+    }
+    const valueNode = child.childForFieldName("value");
+    const hasDefault = valueNode !== null || kind === "optional_parameter";
+    out.push({ position, name, typeText, hasDefault });
+    position++;
+  }
   return out;
 }
 
@@ -261,6 +440,7 @@ function resolveLocalEdges(
     kind: ExtractedEdge["kind"];
     confidence: number;
     callLine: number;
+    argBindings?: ExtractedArgBinding[];
   }>,
 ): ExtractedEdge[] {
   // Sort symbols ascending by range size so the smallest-containing symbol
@@ -279,7 +459,7 @@ function resolveLocalEdges(
       }
     }
     if (!enclosing) continue;
-    out.push({
+    const edge: ExtractedEdge = {
       fromName: enclosing.name,
       fromParentName: enclosing.parentName,
       toName: e.toName,
@@ -287,7 +467,11 @@ function resolveLocalEdges(
       kind: e.kind,
       confidence: e.confidence,
       callLine: e.callLine,
-    });
+    };
+    if (e.argBindings && e.argBindings.length > 0) {
+      edge.argBindings = e.argBindings;
+    }
+    out.push(edge);
   }
   return out;
 }

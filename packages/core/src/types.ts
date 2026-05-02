@@ -77,6 +77,50 @@ export interface ExtractedEdge {
   kind: EdgeKind;
   confidence: number;
   callLine: number | null;
+  /**
+   * Per-argument bindings at a CALLS edge's call site. Empty for non-call
+   * edges (EXTENDS / IMPLEMENTS / IMPORTS). Carried side-by-side with the
+   * edge so `insertExtracted` can persist them after the edge row exists.
+   */
+  argBindings?: ExtractedArgBinding[];
+}
+
+/** What kind of expression appears in argument position at a call site. */
+export type ArgSourceKind =
+  | "identifier"
+  | "literal"
+  | "member"
+  | "call"
+  | "spread"
+  | "other";
+
+export interface ExtractedArgBinding {
+  position: number;
+  sourceKind: ArgSourceKind;
+  sourceText: string;
+}
+
+export interface ExtractedParam {
+  /** 0-based position. */
+  position: number;
+  name: string;
+  /** Raw type annotation source text, or null when absent. */
+  typeText: string | null;
+  hasDefault: boolean;
+}
+
+/**
+ * A formal-parameter row keyed back to its enclosing symbol via the same
+ * (kind, parentName, name) tuple `insertExtracted` uses for edges. Carried on
+ * `ExtractedSymbol`-side rather than `ExtractedFile` to keep the symbol/param
+ * association explicit through the pipeline.
+ */
+export interface ExtractedSymbolParams {
+  ownerKind: SymbolKind;
+  ownerName: string;
+  /** Enclosing class name when the owner is a method, else null. */
+  ownerParentName: string | null;
+  params: ExtractedParam[];
 }
 
 export interface ExtractedImport {
@@ -93,6 +137,27 @@ export interface ExtractedFile {
   symbols: ExtractedSymbol[];
   edges: ExtractedEdge[];
   imports: ExtractedImport[];
+  /**
+   * Formal-parameter rows. One entry per function/method symbol that has
+   * any parameters (or even zero — we still record the empty list to
+   * disambiguate from "not extracted yet"). Populated for TypeScript only.
+   */
+  symbolParams?: ExtractedSymbolParams[];
+}
+
+/**
+ * Edge kind in the `pathBetween` traversal: a regular CALLS edge from the
+ * graph, or an ARG_BIND edge that follows a value flowing from a producer
+ * symbol into the parameter of a callee via an argument expression.
+ */
+export type PathEdgeKind = "CALLS" | "ARG_BIND";
+
+export interface PathStep {
+  name: string;
+  file: string | null;
+  line: number | null;
+  /** How this step was reached from the previous one. `null` on the seed. */
+  edgeKind: PathEdgeKind | null;
 }
 
 export interface Definition {

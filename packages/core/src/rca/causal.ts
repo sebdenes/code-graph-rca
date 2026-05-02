@@ -16,7 +16,18 @@ import { isStdlibName } from "./stdlib-names.js";
  * `CausalCandidate`s — the LLM's "where the bug most likely is" cheat sheet.
  *
  * Scoring is deterministic. See the rubric below; weights are inlined and commented.
- */
+ *
+ * --- weight calibration -------------------------------------------------
+ * The per-signal multipliers below were fit from 101 labelled
+ * (failure -> known fix location) pairs mined from sebdenes/code-graph-rca
+ * and sebdenes/athlai. The fit code lives at
+ *   tools/calibration/fit.mjs
+ * and the corpus (gitignored, regenerate via collect.mjs) at
+ *   tools/calibration/corpus.jsonl
+ *
+ * Eval date: 2026-05-02. Pass `useLegacyWeights: true` to recover the
+ * pre-calibration hand-set bucket constants for an A/B comparison.
+ * --------------------------------------------------------------------- */
 
 export interface CausalChainOptions {
   /** Window for "recent" — anything older contributes 0 to recencyScore. Default 90. */
@@ -25,6 +36,9 @@ export interface CausalChainOptions {
   topN?: number;
   /** Optional callee tree (for ambiguity detection — unresolved outgoing edges score). */
   calleeTreeSource?: CalleeTree;
+  /** Use the pre-calibration hand-set bucket constants instead of the learned
+   *  per-signal multipliers. Default false. */
+  useLegacyWeights?: boolean;
 }
 
 export interface CausalChainInput {
@@ -59,6 +73,7 @@ interface RawCandidate {
   subsystem: string | null;
 }
 
+// Bucket shapes (kept for explainability — same buckets as v0.x).
 const RECENCY_BUCKET_7 = 3;
 const RECENCY_BUCKET_30 = 2;
 const RECENCY_BUCKET_90 = 1;
@@ -81,12 +96,55 @@ const COMPLEXITY_MAX = 1.5;
 const DEFAULT_RECENCY_DAYS = 90;
 const DEFAULT_TOP_N = 5;
 
+// Per-signal multipliers learned from the calibration corpus
+// (tools/calibration/fit.mjs, eval 2026-05-02). Each is applied to the
+// bucket-derived raw signal score before summation.
+//
+// Fit on 101 unanchored entries (cgrca_input_caller / cgrca_input_trace,
+// i.e. the realistic case where the failure-input doesn't already name
+// the fix symbol). 80/20 train/holdout, seed=42, 2000 iters of batch
+// gradient descent on a logistic regression with binary "is gold candidate"
+// as the label, anchor candidates filtered out (since the anchor is never
+// the gold by construction). Negative raw weights are clipped to 0 so
+// every signal can only *help* a candidate's score (preserves the
+// rationale text's "dominant signal" semantics).
+//
+// Holdout (n=20): top-1 0.000 -> 0.200, top-5 0.450 -> 0.500,
+// MRR 0.197 -> 0.317 vs the legacy hand-set weights.
+const W_RECENCY = 0.0834;
+const W_PROXIMITY = 0.0; // raw fit -1.39, clipped — proximity is nearly
+                          // constant within a non-anchor candidate set, so
+                          // it carries no discriminative signal here.
+const W_AMBIGUITY = 0.2021;
+const W_COCHANGE = 0.4306;
+const W_SUBSYSTEM = 0.8086;
+const W_COMPLEXITY = 0.4069;
+
+// Legacy (pre-calibration) multipliers — all 1.0, i.e. raw bucket scores.
+const LEGACY_W = {
+  recency: 1.0,
+  proximity: 1.0,
+  ambiguity: 1.0,
+  coChange: 1.0,
+  subsystem: 1.0,
+  complexity: 1.0,
+};
+const CALIBRATED_W = {
+  recency: W_RECENCY,
+  proximity: W_PROXIMITY,
+  ambiguity: W_AMBIGUITY,
+  coChange: W_COCHANGE,
+  subsystem: W_SUBSYSTEM,
+  complexity: W_COMPLEXITY,
+};
+
 export function buildCausalChain(
   input: CausalChainInput,
   opts: CausalChainOptions = {},
 ): CausalCandidate[] {
   const recencyDays = opts.recencyDays ?? DEFAULT_RECENCY_DAYS;
   const topN = opts.topN ?? DEFAULT_TOP_N;
+  const W = opts.useLegacyWeights ? LEGACY_W : CALIBRATED_W;
 
   // 1. Collect candidates: anchor + callers (depth<=2) + callees (depth<=2), deduped.
   const candidates = collectCandidates(input);
@@ -139,13 +197,15 @@ export function buildCausalChain(
         ? Math.min(Math.log2(loc / 20 + 1) * 0.6, COMPLEXITY_MAX)
         : 0;
 
+    // Calibrated weighted sum (per-signal multipliers from logistic
+    // regression fit; see weight block at top of file).
     const score =
-      recencyScore +
-      proximityScore +
-      ambiguityScore +
-      coChangeScore +
-      subsystemScore +
-      complexityScore;
+      W.recency * recencyScore +
+      W.proximity * proximityScore +
+      W.ambiguity * ambiguityScore +
+      W.coChange * coChangeScore +
+      W.subsystem * subsystemScore +
+      W.complexity * complexityScore;
 
     const signals = {
       recencyScore,

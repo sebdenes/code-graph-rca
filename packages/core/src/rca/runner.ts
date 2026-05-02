@@ -37,6 +37,11 @@ export interface RcaRequest {
   budget?: { maxFiles?: number; maxLoc?: number; maxDepth?: number };
   /** Persist the indexed graph to this SQLite file path. Default: in-memory. */
   persist?: string;
+  /** Override top-N candidates returned by the causal scorer. Default 5. */
+  topN?: number;
+  /** Use the pre-calibration hand-set weights for an A/B comparison.
+   *  Default false (use the learned, calibrated weights). */
+  useLegacyWeights?: boolean;
 }
 
 export interface RcaResult {
@@ -196,7 +201,11 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
             calleeTree,
             db: indexed.db,
           },
-          { recencyDays: 90, topN: 5 },
+          {
+            recencyDays: 90,
+            topN: req.topN ?? 5,
+            ...(req.useLegacyWeights ? { useLegacyWeights: true } : {}),
+          },
         );
       } catch (err) {
         notes.push(

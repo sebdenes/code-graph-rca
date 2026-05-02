@@ -79,6 +79,115 @@ export function resolveEdges(db: Db, repoRoot: string): void {
   // / instance method / truly-missing differently. Without this, every
   // unresolved edge is indistinguishable at confidence=0.5.
   classifyUnresolved(db, repoRoot, filesById);
+
+  // 6. Resolve `arg_bindings.source_symbol_id` for identifier-typed args.
+  // Best-effort: looks for a same-file symbol (param of the caller, local
+  // const/let, module-level export) whose name matches the arg's
+  // source_text. Doesn't try cross-file unless an import binds the name.
+  resolveArgBindingSources(db);
+}
+
+/**
+ * Best-effort second pass: for every `arg_bindings` row whose `source_kind`
+ * is `identifier` (i.e. the arg is a bare name like `userId` rather than
+ * `req.userId` or `42`), try to resolve `source_symbol_id` by looking up the
+ * name in the caller's scope. We try, in order:
+ *   1. A formal parameter of the *caller* function/method with the same name.
+ *   2. Any same-file symbol with the matching name (covers module-level
+ *      consts, top-level functions, locally-defined classes).
+ *   3. An imported binding in the same file — pointing at the imported
+ *      symbol on the *exporting* file.
+ *
+ * No cross-scope alias chasing, no shadowing analysis. The whole point is to
+ * give `pathBetween` something to traverse, not to be a real type system.
+ */
+function resolveArgBindingSources(db: Db): void {
+  // Pull all identifier-typed bindings together with their caller context.
+  const rows = db
+    .prepare(
+      `SELECT ab.id AS id,
+              ab.source_text AS source_text,
+              fs.id AS caller_id,
+              fs.file_id AS file_id
+         FROM arg_bindings ab
+         JOIN edges e ON e.id = ab.edge_id
+         JOIN symbols fs ON fs.id = e.from_symbol_id
+        WHERE ab.source_kind = 'identifier'
+          AND ab.source_symbol_id IS NULL`,
+    )
+    .all() as Array<{
+      id: number;
+      source_text: string;
+      caller_id: number;
+      file_id: number;
+    }>;
+  if (rows.length === 0) return;
+
+  // Caller's own parameter — params table keyed on caller_id. We use this to
+  // *short-circuit* same-file symbol lookups when the identifier is a param,
+  // not to write source_symbol_id (params live in their own table; the FK
+  // targets symbols, not params).
+  const findCallerParam = db.prepare(
+    "SELECT id FROM params WHERE symbol_id = ? AND name = ? LIMIT 1",
+  );
+  // Same-file symbol, top-level only (parent_id IS NULL).
+  const findSameFileSym = db.prepare(
+    "SELECT id FROM symbols WHERE file_id = ? AND name = ? AND parent_id IS NULL LIMIT 1",
+  );
+  // Imported-name → exporter symbol. We piggy-back on already-resolved CALLS
+  // edges (see step 3 below) rather than re-walking the import graph here.
+  const findImportedTargetViaEdge = db.prepare(
+    `SELECT e.to_symbol_id AS sid
+       FROM edges e
+       JOIN symbols s ON s.id = e.from_symbol_id
+      WHERE s.file_id = ?
+        AND e.to_name = ?
+        AND e.to_symbol_id IS NOT NULL
+      LIMIT 1`,
+  );
+
+  const update = db.prepare(
+    "UPDATE arg_bindings SET source_symbol_id = ? WHERE id = ?",
+  );
+
+  // Note: a caller's param is not itself a `symbols` row (params live in
+  // their own table). We can't point `source_symbol_id` at a param row —
+  // the FK targets `symbols`. So when we find a caller-param match we
+  // intentionally leave source_symbol_id NULL but mark the binding's
+  // source_kind unchanged; pathBetween still treats arg→caller as a flow
+  // edge via the caller_id implied by the edge. So here we *only* update
+  // when we resolve to a true `symbols` row.
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      // 1) Same-file symbol (top-level).
+      const sameFile = findSameFileSym.get(r.file_id, r.source_text) as
+        | { id: number }
+        | undefined;
+      if (sameFile) {
+        update.run(sameFile.id, r.id);
+        continue;
+      }
+      // 2) Caller's own param: don't update source_symbol_id (no symbols row),
+      // but skip further lookups so we don't spuriously match a same-named
+      // top-level symbol.
+      const callerParam = findCallerParam.get(r.caller_id, r.source_text) as
+        | { id: number }
+        | undefined;
+      if (callerParam) continue;
+      // 3) Imports → resolve to symbol in the imported file. We piggy-back on
+      // the import-resolution machinery already used by edges: an edge whose
+      // to_name matches our identifier and whose from_symbol_id is in the
+      // same file already had its target resolved — so we grab that
+      // to_symbol_id directly. Avoids re-walking the import graph here.
+      const viaEdge = findImportedTargetViaEdge.get(r.file_id, r.source_text) as
+        | { sid: number | null }
+        | undefined;
+      if (viaEdge && viaEdge.sid) {
+        update.run(viaEdge.sid, r.id);
+      }
+    }
+  });
+  tx();
 }
 
 function classifyUnresolved(

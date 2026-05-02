@@ -27,6 +27,10 @@ Commands:
   mcp [path]                Start MCP server on stdio (default repo: cwd).
                             Wire into Cursor / Claude Code / Cody / Cline /
                             Continue / Windsurf / Zed via their MCP config.
+  daemon <start|stop|status>
+                            Manage the cgrcad background process. Once
+                            running, define/callers/callees/changed reuse
+                            its sqlite handles instead of re-indexing.
   init [path]               One-shot setup: detect editor MCP configs,
                             register cgrca, drop AGENTS.md at the repo root.
                             Prints a plan; requires --yes (or interactive
@@ -53,6 +57,11 @@ Common options:
   --persist <path>          Write the indexed graph to a SQLite file (or reuse
                             it on warm queries; open with any sqlite browser
                             to inspect).
+  --no-daemon               Force in-process indexing even when cgrcad is up.
+  --top-n <n>               rca: number of causal candidates to return (default 5).
+  --legacy-weights          rca: use the pre-calibration hand-set weights for
+                            an A/B comparison against the calibrated default.
+                            See packages/core/src/rca/causal.ts.
 `;
 
 interface ParsedArgs {
@@ -81,6 +90,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       flags.maxDepth = argv[++i] ?? "";
     } else if (a === "--persist") {
       flags.persist = argv[++i] ?? "";
+    } else if (a === "--no-daemon") {
+      flags["no-daemon"] = true;
+    } else if (a === "--top-n") {
+      flags.topN = argv[++i] ?? "";
+    } else if (a === "--legacy-weights") {
+      flags["legacy-weights"] = true;
     } else if (a.startsWith("--")) {
       flags[a.slice(2)] = true;
     } else {
@@ -284,7 +299,19 @@ async function cmdRca(args: ParsedArgs): Promise<number> {
   if (typeof args.flags.maxDepth === "string") budget.maxDepth = Number(args.flags.maxDepth);
 
   const persist = typeof args.flags.persist === "string" ? args.flags.persist : undefined;
-  const result = await runRca({ failureScope: failure, repoRoot, budget, ...(persist ? { persist } : {}) });
+  const topN =
+    typeof args.flags.topN === "string" && args.flags.topN.length > 0
+      ? Number(args.flags.topN)
+      : undefined;
+  const useLegacyWeights = args.flags["legacy-weights"] === true;
+  const result = await runRca({
+    failureScope: failure,
+    repoRoot,
+    budget,
+    ...(persist ? { persist } : {}),
+    ...(topN !== undefined && Number.isFinite(topN) ? { topN } : {}),
+    ...(useLegacyWeights ? { useLegacyWeights: true } : {}),
+  });
   if (persist) {
     const persistAbs = resolve(persist);
     process.stderr.write(`graph persisted to ${persistAbs}\n`);
@@ -379,6 +406,26 @@ async function resolveQueryDb(
   return r.db;
 }
 
+/**
+ * If the daemon is reachable and `--no-daemon` wasn't passed, return its
+ * answer; otherwise return null so the caller falls back to in-process
+ * indexScope.
+ */
+async function tryDaemon<R>(
+  args: ParsedArgs,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<R | null> {
+  if (args.flags["no-daemon"] === true) return null;
+  const { isDaemonUp, callDaemon } = await import("./daemon/index.js");
+  if (!(await isDaemonUp())) return null;
+  try {
+    return await callDaemon<R>(method, params);
+  } catch {
+    return null;
+  }
+}
+
 async function cmdDefine(args: ParsedArgs): Promise<number> {
   const name = args.positional[0];
   if (!name) {
@@ -386,6 +433,23 @@ async function cmdDefine(args: ParsedArgs): Promise<number> {
     return 2;
   }
   const repoRoot = repoRootFrom(args.flags);
+  const warm = await tryDaemon<Array<{
+    name: string; kind: string; file: string; startLine: number; endLine: number;
+    signature: string | null; exported: boolean; language: string;
+  }>>(args, "define", { repoRoot, name });
+  if (warm) {
+    if (warm.length === 0) {
+      process.stdout.write(`no definitions for "${name}"\n`);
+    } else {
+      for (const d of warm) {
+        process.stdout.write(
+          `${d.kind} ${d.name}  ${d.file}:${d.startLine}-${d.endLine}  ${d.exported ? "exported" : "internal"}  [${d.language}]\n`,
+        );
+        if (d.signature) process.stdout.write(`  ${d.signature}\n`);
+      }
+    }
+    return 0;
+  }
   const db = await resolveQueryDb(args, repoRoot);
   const defs = definitionOf(db, name);
   if (defs.length === 0) {
@@ -410,6 +474,11 @@ async function cmdCallers(args: ParsedArgs): Promise<number> {
   }
   const repoRoot = repoRootFrom(args.flags);
   const depth = typeof args.flags.depth === "string" ? Number(args.flags.depth) : 2;
+  const warm = await tryDaemon<unknown>(args, "callers", { repoRoot, name, depth });
+  if (warm !== null) {
+    process.stdout.write(JSON.stringify(warm, null, 2) + "\n");
+    return 0;
+  }
   const db = await resolveQueryDb(args, repoRoot);
   const tree = callersOf(db, name, { depth });
   process.stdout.write(JSON.stringify(tree, null, 2) + "\n");
@@ -425,6 +494,11 @@ async function cmdCallees(args: ParsedArgs): Promise<number> {
   }
   const repoRoot = repoRootFrom(args.flags);
   const depth = typeof args.flags.depth === "string" ? Number(args.flags.depth) : 1;
+  const warm = await tryDaemon<unknown>(args, "callees", { repoRoot, name, depth });
+  if (warm !== null) {
+    process.stdout.write(JSON.stringify(warm, null, 2) + "\n");
+    return 0;
+  }
   const db = await resolveQueryDb(args, repoRoot);
   const tree = calleesOf(db, name, { depth });
   process.stdout.write(JSON.stringify(tree, null, 2) + "\n");
@@ -440,6 +514,19 @@ async function cmdChanged(args: ParsedArgs): Promise<number> {
   }
   const repoRoot = repoRootFrom(args.flags);
   const sinceDays = typeof args.flags.since === "string" ? Number(args.flags.since) : 90;
+  const warm = await tryDaemon<Array<{
+    commit: string; author: string; date: string; subject: string; file: string;
+  }>>(args, "changed", { repoRoot, name, sinceDays });
+  if (warm !== null) {
+    if (warm.length === 0) {
+      process.stdout.write(`no recent commits touching "${name}" in the last ${sinceDays}d\n`);
+    } else {
+      for (const c of warm) {
+        process.stdout.write(`${c.commit.slice(0, 8)}  ${c.author}  ${c.date}  ${c.subject}  (${c.file})\n`);
+      }
+    }
+    return 0;
+  }
   const db = await resolveQueryDb(args, repoRoot);
   const changes = recentlyChangedNear(db, name, { repoRoot, sinceDays });
   if (changes.length === 0) {
@@ -532,6 +619,81 @@ async function cmdMcp(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function cmdDaemon(args: ParsedArgs): Promise<number> {
+  const sub = args.positional[0];
+  if (!sub) {
+    process.stderr.write("daemon: usage: cgrca daemon <start|stop|status>\n");
+    return 2;
+  }
+  const { isDaemonUp, callDaemon, SOCKET_PATH, readLock } = await import(
+    "./daemon/index.js"
+  );
+
+  if (sub === "status") {
+    const up = await isDaemonUp();
+    if (!up) {
+      const lock = readLock();
+      process.stdout.write(
+        lock
+          ? `daemon: not responding (lockfile pid ${lock.pid})\n`
+          : "daemon: not running\n",
+      );
+      return up ? 0 : 1;
+    }
+    const status = await callDaemon<{ pid: number; startedAt: number; repos: string[] }>(
+      "status",
+      {},
+    );
+    process.stdout.write(
+      `daemon: running  pid=${status.pid}  startedAt=${new Date(status.startedAt).toISOString()}  repos=${status.repos.length}\n`,
+    );
+    for (const r of status.repos) process.stdout.write(`  ${r}\n`);
+    return 0;
+  }
+
+  if (sub === "stop") {
+    if (!(await isDaemonUp())) {
+      process.stdout.write("daemon: not running\n");
+      return 0;
+    }
+    await callDaemon("stop", {});
+    process.stdout.write("daemon: stopping\n");
+    return 0;
+  }
+
+  if (sub === "start") {
+    if (await isDaemonUp()) {
+      process.stdout.write("daemon: already running\n");
+      return 0;
+    }
+    // Fork ourselves with `__daemon-run` so the new process becomes the
+    // server and detaches. We use the same node + argv0 so PATH lookups
+    // don't drift between launcher and child.
+    const { spawn } = await import("node:child_process");
+    const { fileURLToPath } = await import("node:url");
+    const selfPath = fileURLToPath(import.meta.url);
+    const child = spawn(process.execPath, [selfPath, "__daemon-run"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    // Wait up to 3s for the socket to come up.
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline) {
+      if (await isDaemonUp()) {
+        process.stdout.write(`daemon: started  socket=${SOCKET_PATH}\n`);
+        return 0;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    process.stderr.write("daemon: failed to start within 3s\n");
+    return 1;
+  }
+
+  process.stderr.write(`daemon: unknown subcommand: ${sub}\n`);
+  return 2;
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   if (argv.length === 0 || argv[0] === "-h" || argv[0] === "--help") {
@@ -541,6 +703,19 @@ async function main(): Promise<number> {
   const cmd = argv[0]!;
   const rest = argv.slice(1);
   const args = parseArgs(rest);
+
+  // Internal entrypoint used by `cgrca daemon start` after fork. Not in
+  // USAGE: it's a private contract between the launcher and the child.
+  if (cmd === "__daemon-run") {
+    const { startDaemon } = await import("./daemon/index.js");
+    const handle = startDaemon({});
+    await handle.ready;
+    process.on("SIGTERM", () => { void handle.stop(); });
+    process.on("SIGINT", () => { void handle.stop(); });
+    // Block forever — node will exit when the server.close() in stop() drains.
+    await new Promise<void>(() => { /* never resolves */ });
+    return 0;
+  }
 
   switch (cmd) {
     case "rca":
@@ -559,6 +734,8 @@ async function main(): Promise<number> {
       return cmdInit(args);
     case "changed":
       return cmdChanged(args);
+    case "daemon":
+      return cmdDaemon(args);
     case "version":
     case "--version":
     case "-v":

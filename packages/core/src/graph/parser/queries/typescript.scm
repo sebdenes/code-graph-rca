@@ -139,6 +139,23 @@
       property: (property_identifier) @call.object)
     property: (property_identifier) @call.callee))
 
+; ---------------- Params ----------------
+; Capture the formal_parameters node of each function-shaped symbol. The
+; extractor walks the children to enumerate required_parameter and
+; optional_parameter nodes and collects (name, type, has_default) per slot.
+
+(function_declaration
+  parameters: (formal_parameters) @symbol.params)
+
+(function_expression
+  parameters: (formal_parameters) @symbol.params)
+
+(arrow_function
+  parameters: (formal_parameters) @symbol.params)
+
+(method_definition
+  parameters: (formal_parameters) @symbol.params)
+
 ; ---------------- Imports ----------------
 ; import_statement → import_clause → (named_imports | namespace_import | identifier)
 ; source: (string)

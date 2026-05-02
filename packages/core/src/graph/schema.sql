@@ -55,3 +55,39 @@ CREATE TABLE IF NOT EXISTS imports (
   kind TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_imports_lookup ON imports(file_id, local_name);
+
+-- Each formal parameter of each function/method symbol.
+-- Populated for TypeScript only in v4; Python deferred.
+CREATE TABLE IF NOT EXISTS params (
+  id INTEGER PRIMARY KEY,
+  symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,        -- 0-based
+  name TEXT NOT NULL,
+  type_text TEXT,                   -- raw type annotation if available, else NULL
+  has_default INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_params_symbol ON params(symbol_id);
+
+-- Each argument expression at each call site.
+-- Populated for TypeScript only in v4; Python deferred.
+CREATE TABLE IF NOT EXISTS arg_bindings (
+  id INTEGER PRIMARY KEY,
+  edge_id INTEGER NOT NULL REFERENCES edges(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,        -- 0-based
+  source_kind TEXT NOT NULL,        -- 'identifier' | 'literal' | 'member' | 'call' | 'spread' | 'other'
+  source_text TEXT NOT NULL,        -- the raw text of the arg expression
+  source_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL  -- resolved when source is a known identifier/symbol
+);
+CREATE INDEX IF NOT EXISTS idx_arg_bindings_edge ON arg_bindings(edge_id);
+CREATE INDEX IF NOT EXISTS idx_arg_bindings_source ON arg_bindings(source_symbol_id);
+
+-- v5: cgrcad blob-sha cache. Skips tree-sitter on files whose
+-- `git hash-object` already matches a cached row. Keyed by file_path
+-- (one row per path; we overwrite on sha change).
+CREATE TABLE IF NOT EXISTS blob_cache (
+  file_path TEXT PRIMARY KEY,
+  blob_sha TEXT NOT NULL,
+  extracted_json TEXT NOT NULL,
+  cached_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_blob_cache_sha ON blob_cache(blob_sha);

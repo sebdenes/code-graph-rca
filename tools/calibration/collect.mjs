@@ -14,12 +14,14 @@
 // retry them.
 
 import { execFileSync, execSync } from 'node:child_process';
-import { readFileSync, existsSync, appendFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, appendFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORPUS_PATH = join(__dirname, 'corpus.jsonl');
+const CGRCA_CLI = join(__dirname, '..', '..', 'packages', 'core', 'dist', 'cli.js');
 
 // --- repo configuration ---------------------------------------------------
 // localPath: optional. If set, we drive symbol extraction off the local
@@ -482,8 +484,181 @@ function processGitLogFallback(repo, existingIds) {
 	return { added, errors, skipped };
 }
 
+// --- enrichment: add cgrca_input_caller / cgrca_input_trace --------------
+//
+// Each row in corpus.jsonl uses `cgrca_input = symbol:<fix_symbol>` which
+// makes the fix the anchor (distance=0, proximity 2.5). That inflates
+// top-1. To exercise the ranker we add a second input that does NOT name
+// the fix_symbol:
+//   - cgrca_input_trace  if failure_text looks like a stack trace
+//   - cgrca_input_caller = symbol:<one-hop caller of fix_symbol> (via the
+//     graph at parent_commit), or a sibling symbol in the same file as a
+//     last resort.
+//   - unanchored_input = null + reason  if neither shape works
+
+const REPO_PATHS = {
+	'sebdenes/code-graph-rca': '/Users/I048171/code-graph-rca',
+	'sebdenes/athlai': '/Users/I048171/Athlai-Antigravity/athlai',
+};
+
+const TRACE_RE = /(File "[^"]+", line \d+)|(at [\w$.<>]+ \([^)]+:\d+(?::\d+)?\))|(Traceback \(most recent call last\))|(\bat .+:\d+:\d+)/;
+
+function looksLikeTrace(text) {
+	if (!text || text.length < 20) return false;
+	return TRACE_RE.test(text);
+}
+
+function setupWorktree(repoPath, sha) {
+	const wt = mkdtempSync(join(tmpdir(), `cgrca-enrich-${sha.slice(0, 8)}-`));
+	const r = shTry(`git -C ${repoPath} worktree add --detach ${wt} ${sha}`);
+	if (!r && !existsSync(join(wt, '.git'))) {
+		try { rmSync(wt, { recursive: true, force: true }); } catch {}
+		return null;
+	}
+	return wt;
+}
+function teardownWorktree(repoPath, wt) {
+	shTry(`git -C ${repoPath} worktree remove --force ${wt}`);
+	try { rmSync(wt, { recursive: true, force: true }); } catch {}
+}
+
+// Use cgrca CLI to look up callers of fix_symbol at parent_commit.
+// Pass --persist <dbPath> so the index is reused across multiple lookups
+// in the same worktree.
+function callersAt(worktree, symbol, dbPath) {
+	const persistArg = dbPath ? `--persist ${JSON.stringify(dbPath)}` : '';
+	const out = shTry(`node ${CGRCA_CLI} callers ${JSON.stringify(symbol)} --repo ${JSON.stringify(worktree)} ${persistArg} 2>/dev/null`, { timeout: 120000 });
+	if (!out) return [];
+	try {
+		const obj = JSON.parse(out);
+		return obj.callers ?? [];
+	} catch {
+		return [];
+	}
+}
+
+// Find a sibling symbol (other function/class in the same file at parent).
+function siblingSymbol(repoPath, parentSha, file, fixSymbol) {
+	const src = shTry(`git -C ${repoPath} show ${parentSha}:${JSON.stringify(file).slice(1, -1)}`, { shell: '/bin/bash' });
+	if (!src) return null;
+	// Cheap heuristic: extract def/function/class identifiers, return the first one != fixSymbol.
+	const names = new Set();
+	for (const line of src.split('\n')) {
+		const py = line.match(/^\s*(?:async\s+def|def|class)\s+([A-Za-z_][\w]*)/);
+		if (py) names.add(py[1]);
+		const ts1 = line.match(/^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/);
+		if (ts1) names.add(ts1[1]);
+		const ts2 = line.match(/^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\(|function)/);
+		if (ts2) names.add(ts2[1]);
+		const ts3 = line.match(/^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)/);
+		if (ts3) names.add(ts3[1]);
+	}
+	for (const n of names) if (n !== fixSymbol) return n;
+	return null;
+}
+
+function enrichAll() {
+	if (!existsSync(CORPUS_PATH)) {
+		console.error('no corpus.jsonl to enrich; run collect first');
+		return;
+	}
+	const lines = readFileSync(CORPUS_PATH, 'utf8').split('\n').filter((l) => l.trim());
+	const rows = lines.map((l) => JSON.parse(l));
+	const out = [];
+	let nTrace = 0, nCaller = 0, nSibling = 0, nNone = 0, nSkipped = 0;
+	const TMPDIR = mkdtempSync(join(tmpdir(), 'cgrca-trace-'));
+
+	// Group rows by (repo, parent_commit) so we set up each worktree once.
+	const groups = new Map();
+	for (let i = 0; i < rows.length; i++) {
+		const r = rows[i];
+		if (r.error) { out.push(r); continue; }
+		if (r.cgrca_input_caller || r.cgrca_input_trace || r.unanchored_input === null) {
+			// Already enriched.
+			out.push(r);
+			nSkipped++;
+			continue;
+		}
+		const key = `${r.repo}@@${r.parent_commit}`;
+		if (!groups.has(key)) groups.set(key, []);
+		groups.get(key).push(i);
+	}
+
+	// Pre-fill out[] with placeholders for unprocessed rows so we can patch.
+	for (let i = 0; i < rows.length; i++) {
+		if (out[i] === undefined) out[i] = rows[i];
+	}
+
+	let g = 0;
+	for (const [key, idxs] of groups) {
+		g++;
+		const [slug, parent] = key.split('@@');
+		const repoPath = REPO_PATHS[slug];
+		console.error(`[${g}/${groups.size}] ${slug}@${parent.slice(0, 8)} (${idxs.length} rows)`);
+		if (!repoPath) {
+			for (const i of idxs) out[i] = { ...rows[i], unanchored_input: null, unanchored_reason: 'unknown repo' };
+			continue;
+		}
+		const wt = setupWorktree(repoPath, parent);
+		if (!wt) {
+			for (const i of idxs) out[i] = { ...rows[i], unanchored_input: null, unanchored_reason: 'worktree setup failed' };
+			continue;
+		}
+		const dbPath = join(wt, '.cgrca-cal.sqlite');
+		try {
+			for (const i of idxs) {
+				const r = rows[i];
+				const enriched = { ...r };
+				// 1. trace?
+				if (looksLikeTrace(r.failure_text)) {
+					const tracePath = join(TMPDIR, `${r.id.replace(/[\/#@]/g, '_')}.trace.txt`);
+					writeFileSync(tracePath, r.failure_text);
+					enriched.cgrca_input_trace = tracePath;
+					nTrace++;
+					out[i] = enriched;
+					continue;
+				}
+				// 2. caller?
+				const callers = callersAt(wt, r.fix_symbol, dbPath);
+				const callerNames = callers.map((c) => c.name).filter((n) => n !== r.fix_symbol);
+				if (callerNames.length > 0) {
+					enriched.cgrca_input_caller = `symbol:${callerNames[0]}`;
+					enriched.cgrca_input_caller_via = 'callersOf';
+					nCaller++;
+					out[i] = enriched;
+					continue;
+				}
+				// 3. sibling?
+				const sib = siblingSymbol(repoPath, parent, r.fix_symbol_file, r.fix_symbol);
+				if (sib) {
+					enriched.cgrca_input_caller = `symbol:${sib}`;
+					enriched.cgrca_input_caller_via = 'sibling';
+					nSibling++;
+					out[i] = enriched;
+					continue;
+				}
+				// 4. give up
+				enriched.unanchored_input = null;
+				enriched.unanchored_reason = 'no trace, no caller, no sibling';
+				out[i] = enriched;
+				nNone++;
+			}
+		} finally {
+			teardownWorktree(repoPath, wt);
+		}
+	}
+
+	// Rewrite corpus.
+	writeFileSync(CORPUS_PATH, out.map((r) => JSON.stringify(r)).join('\n') + '\n');
+	console.error(`enrichment done. trace=${nTrace} caller=${nCaller} sibling=${nSibling} none=${nNone} skipped=${nSkipped}`);
+}
+
 function main() {
 	mkdirSync(__dirname, { recursive: true });
+	if (process.argv.includes('--enrich')) {
+		enrichAll();
+		return;
+	}
 	const existing = loadExistingIds();
 	console.error(`existing rows: ${existing.size}`);
 

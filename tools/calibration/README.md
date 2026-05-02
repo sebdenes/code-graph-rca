@@ -135,6 +135,90 @@ For week-2 calibration we should:
    on this anchored set. Co-change is exactly the signal the calibrated
    model needs to prove out on harder inputs.
 
+## Two metric tracks (post-week-2)
+
+`collect.mjs --enrich` adds two extra fields per row:
+
+- `cgrca_input_trace` — set when `failure_text` looks like a stack trace
+  (file:line + function refs). Written to a temp file path so cgrca's
+  stack-trace parser kicks in.
+- `cgrca_input_caller` — `symbol:<one-hop caller of fix_symbol>` resolved
+  via cgrca's own `callersOf` query at `parent_commit`. Falls back to a
+  sibling symbol in the same file if no caller exists.
+- `unanchored_input: null` + `unanchored_reason` — when neither shape
+  works (no trace, no caller, no sibling).
+
+Aim: ≥ 50 rows with a non-anchored input. As of 2026-05-02 enrichment:
+1 trace + 61 caller + 39 sibling = 101 / 101 rows enriched.
+
+`score.mjs --mode anchored|unanchored|both` picks which input to feed
+cgrca per row:
+
+| track       | input shape           | what it measures                         |
+| ----------- | --------------------- | ---------------------------------------- |
+| anchored    | `symbol:<fix_symbol>` | "does the anchor stay rank-1" (inflated) |
+| unanchored  | `symbol:<caller>` / trace | the realistic case — find the bug from |
+|             |                       | a non-fix starting point                  |
+
+Pass `--dump-signals <path>` to write a JSONL of every (entry, candidate,
+signals, label) tuple to `<path>`. That's the input to `fit.mjs`.
+
+## Fitting the calibrated weights
+
+```bash
+# 1. enrich corpus (one-time after collect)
+node collect.mjs --enrich
+
+# 2. score in unanchored mode and dump signals
+node score.mjs --mode unanchored --dump-signals /tmp/cgrca-signals.jsonl
+
+# 3. fit logistic regression — prints learned multipliers and holdout metrics
+node fit.mjs --dump /tmp/cgrca-signals.jsonl
+```
+
+`fit.mjs` runs batch gradient descent on a logistic regression with the
+six per-signal scores as features and "is the gold candidate" as the
+label. Anchor candidates are filtered out of training (the anchor is
+never the gold by construction in unanchored mode). The 80/20 train /
+holdout split uses seed=42 (mulberry32) for reproducibility.
+
+Output is written to `fit.out.json` next to the script. Negative raw
+weights are clipped to 0 in the production multipliers — every signal
+must only *help* a candidate's score for the rationale text in
+`packages/core/src/rca/causal.ts` to remain coherent.
+
+### 2026-05-02 fit, headline numbers
+
+Holdout (n=20, seed=42):
+
+| weights              | top-1 | top-5 | MRR   |
+| -------------------- | ----- | ----- | ----- |
+| legacy (hand-set)    | 0.000 | 0.450 | 0.197 |
+| learned (raw)        | 0.250 | 0.550 | 0.366 |
+| learned (clipped)    | 0.200 | 0.500 | 0.317 |
+
+Production multipliers (clipped):
+
+```
+recencyScore       0.0834
+proximityScore     0.0000   (raw -1.39 → clipped; near-constant signal in
+                              the non-anchor candidate set)
+ambiguityScore     0.2021
+coChangeScore      0.4306
+subsystemScore     0.8086
+complexityScore    0.4069
+```
+
+The realistic-case finding inverts the anchored-mode hypothesis:
+**co-change carries the most learnable signal once you stop letting
+the anchor auto-win**, while subsystem-match dominates the absolute
+weight ranking. Proximity has near-zero variance among non-anchor
+candidates, so the fit pushes it negative and the clip removes it.
+
+The `--legacy-weights` CLI flag (and `useLegacyWeights: true` option on
+`buildCausalChain`) preserves the original hand-set weights for users
+who pass `symbol:<known-symbol>` and expect the anchor to lead.
+
 ## Known limitations
 
 - **Symbol-to-name resolution is a heuristic.** We pull the function name

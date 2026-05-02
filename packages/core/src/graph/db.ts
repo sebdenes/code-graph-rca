@@ -17,8 +17,15 @@ const SCHEMA_PATH = join(here, "schema.sql");
  * - v3: edges gains `resolution_kind` column so unresolved CALLS edges can
  *   distinguish stdlib / external_module / instance_method / unknown
  *   instead of all collapsing onto confidence=0.5.
+ * - v4: adds `params` (formal parameters per function/method symbol) and
+ *   `arg_bindings` (per-call-site argument expressions classified as
+ *   identifier/literal/member/call/spread/other). Foundation for data-flow
+ *   queries like `pathBetween`. TypeScript only this round; Python deferred.
+ * - v5: adds `blob_cache` table — (file_path, blob_sha) → ExtractedFile
+ *   JSON. Lets cgrcad skip tree-sitter on files whose `git hash-object`
+ *   already matches a cached row.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 5;
 
 export type Db = Database.Database;
 

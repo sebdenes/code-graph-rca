@@ -1,0 +1,82 @@
+{
+  "dim": 6,
+  "signalKeys": [
+    "recencyScore",
+    "proximityScore",
+    "ambiguityScore",
+    "coChangeScore",
+    "subsystemScore",
+    "complexityScore"
+  ],
+  "weightsRaw": {
+    "recencyScore": 0.08340792320923661,
+    "proximityScore": -1.3893938959976024,
+    "ambiguityScore": 0.20212410755776336,
+    "coChangeScore": 0.43064975785072634,
+    "subsystemScore": 0.8086201684603964,
+    "complexityScore": 0.40693359549732333
+  },
+  "weightsProduction": {
+    "recencyScore": 0.08340792320923661,
+    "proximityScore": 0,
+    "ambiguityScore": 0.20212410755776336,
+    "coChangeScore": 0.43064975785072634,
+    "subsystemScore": 0.8086201684603964,
+    "complexityScore": 0.40693359549732333
+  },
+  "bias": -2.6101343725577184,
+  "train": {
+    "n": 80,
+    "denom": 80,
+    "hits1": 15,
+    "hits5": 32,
+    "top1": 0.1875,
+    "top5": 0.4,
+    "mrr": 0.2639644607843137
+  },
+  "holdout": {
+    "n": 20,
+    "denom": 20,
+    "hits1": 5,
+    "hits5": 11,
+    "top1": 0.25,
+    "top5": 0.55,
+    "mrr": 0.3656845238095238
+  },
+  "clippedTrain": {
+    "denom": 80,
+    "hits1": 6,
+    "hits5": 29,
+    "top1": 0.075,
+    "top5": 0.3625,
+    "mrr": 0.19973231792717078
+  },
+  "clippedHoldout": {
+    "denom": 20,
+    "hits1": 4,
+    "hits5": 10,
+    "top1": 0.2,
+    "top5": 0.5,
+    "mrr": 0.3173062558356676
+  },
+  "legacy": {
+    "train": {
+      "denom": 80,
+      "hits1": 4,
+      "hits5": 28,
+      "top1": 0.05,
+      "top5": 0.35,
+      "mrr": 0.1881629273504273
+    },
+    "holdout": {
+      "denom": 20,
+      "hits1": 0,
+      "hits5": 9,
+      "top1": 0,
+      "top5": 0.45,
+      "mrr": 0.1973062558356676
+    }
+  },
+  "evalDate": "2026-05-02",
+  "seed": 42
+}

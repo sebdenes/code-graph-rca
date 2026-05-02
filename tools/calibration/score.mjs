@@ -18,7 +18,7 @@
 // No npm deps — Node + git + cgrca CLI only.
 
 import { execSync } from 'node:child_process';
-import { readFileSync, existsSync, rmSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdtempSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -26,6 +26,12 @@ import { tmpdir } from 'node:os';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORPUS_PATH = join(__dirname, 'corpus.jsonl');
 const CGRCA_CLI = join(__dirname, '..', '..', 'packages', 'core', 'dist', 'cli.js');
+
+// --mode anchored | unanchored | both (default: both)
+const MODE_ARG_IDX = process.argv.indexOf('--mode');
+const MODE = MODE_ARG_IDX >= 0 ? process.argv[MODE_ARG_IDX + 1] : 'both';
+const SIGNAL_DUMP_IDX = process.argv.indexOf('--dump-signals');
+const SIGNAL_DUMP = SIGNAL_DUMP_IDX >= 0 ? process.argv[SIGNAL_DUMP_IDX + 1] : null;
 
 const REPO_PATHS = {
 	'sebdenes/code-graph-rca': '/Users/I048171/code-graph-rca',
@@ -81,10 +87,12 @@ function teardownWorktree(repoPath, wt) {
 	} catch {}
 }
 
-function runCgrca(worktree, cgrcaInput) {
-	// 60s timeout per call.
+function runCgrca(worktree, cgrcaInput, opts = {}) {
+	// 60s timeout per call. opts: { topN, legacy }
+	const topNArg = opts.topN ? `--top-n ${opts.topN}` : '';
+	const legacyArg = opts.legacy ? '--legacy-weights' : '';
 	const out = shTry(
-		`node ${CGRCA_CLI} rca ${JSON.stringify(cgrcaInput)} --json --repo ${JSON.stringify(worktree)}`,
+		`node ${CGRCA_CLI} rca ${JSON.stringify(cgrcaInput)} --json --repo ${JSON.stringify(worktree)} ${topNArg} ${legacyArg}`,
 		{ timeout: 60_000 },
 	);
 	if (!out) return null;
@@ -136,8 +144,19 @@ function pearson(xs, ys) {
 	return num / Math.sqrt(dx * dy);
 }
 
-function main() {
+function inputForMode(e, mode) {
+	if (mode === 'anchored') return e.cgrca_input;
+	if (mode === 'unanchored') {
+		if (e.cgrca_input_trace) return e.cgrca_input_trace;
+		if (e.cgrca_input_caller) return e.cgrca_input_caller;
+		return null;
+	}
+	return e.cgrca_input;
+}
+
+function scoreOne(mode, opts) {
 	const entries = loadEntries();
+	console.error(`\n=== mode=${mode}${opts.legacy ? ' (legacy weights)' : ''} ===`);
 	console.error(`scoring ${entries.length} entries...`);
 
 	const results = [];
@@ -151,29 +170,39 @@ function main() {
 	];
 	const signalSeries = Object.fromEntries(SIGNAL_KEYS.map((k) => [k, []]));
 	const hitSeries = [];
+	const dumpRows = []; // for fit.mjs
 
 	let processed = 0;
 	let hits1 = 0,
 		hits5 = 0;
 	let mrrSum = 0;
+	let skipped = 0;
 
 	for (const e of entries) {
 		processed++;
+		const input = inputForMode(e, mode);
+		if (!input) {
+			skipped++;
+			continue;
+		}
 		const repoPath = REPO_PATHS[e.repo];
 		if (!repoPath) {
 			console.error(`[skip] ${e.id} unknown repo`);
+			skipped++;
 			continue;
 		}
 		const wt = setupWorktree(repoPath, e.parent_commit);
 		if (!wt) {
 			console.error(`[skip] ${e.id} worktree-add failed`);
+			skipped++;
 			continue;
 		}
 
 		try {
-			const result = runCgrca(wt, e.cgrca_input);
+			const result = runCgrca(wt, input, { topN: opts.topN ?? 25, legacy: opts.legacy });
 			if (!result) {
 				console.error(`[skip] ${e.id} cgrca failed/timeout`);
+				skipped++;
 				continue;
 			}
 			const cands = result.causalCandidates || [];
@@ -186,14 +215,31 @@ function main() {
 			hits5 += hit5;
 			mrrSum += reciprocal;
 
-			// Per-signal series — read signals on the fix_symbol candidate
-			// (or zeros if not present in the candidate set).
 			let signals = null;
 			if (rank > 0) signals = cands[rank - 1].signals || null;
 			for (const k of SIGNAL_KEYS) {
 				signalSeries[k].push(signals?.[k] ?? 0);
 			}
 			hitSeries.push(hit1);
+
+			// For each *candidate* in the result (not just the gold), record a
+			// row so the fitter learns "these signals → win or not". The label
+			// is 1 only for the gold (= fix_symbol) candidate, 0 for every
+			// other candidate. This is the per-row training signal.
+			if (cands.length > 0) {
+				for (let i = 0; i < cands.length; i++) {
+					const c = cands[i];
+					const isGold = c.name === e.fix_symbol &&
+						(!e.fix_symbol_file || c.file === e.fix_symbol_file || c.file === null);
+					dumpRows.push({
+						id: e.id,
+						mode,
+						candidateRank: i + 1,
+						label: isGold ? 1 : 0,
+						signals: c.signals ?? {},
+					});
+				}
+			}
 
 			results.push({ id: e.id, rank, hit1, hit5, score: rank > 0 ? cands[rank - 1].score : 0 });
 			console.error(
@@ -205,11 +251,11 @@ function main() {
 	}
 
 	const n = hitSeries.length;
-	console.log('\n=== cgrca calibration baseline ===');
-	console.log(`scored: ${n} / ${entries.length} entries`);
+	console.log(`\n=== cgrca calibration ${mode}${opts.legacy ? ' (legacy)' : ''} ===`);
+	console.log(`scored: ${n} / ${entries.length} entries (skipped=${skipped})`);
 	if (n === 0) {
 		console.log('no successful runs — nothing to summarise');
-		return;
+		return { signals: dumpRows };
 	}
 	console.log(`Top-1 hit rate:  ${(hits1 / n).toFixed(3)}  (${hits1}/${n})`);
 	console.log(`Top-5 hit rate:  ${(hits5 / n).toFixed(3)}  (${hits5}/${n})`);
@@ -221,7 +267,17 @@ function main() {
 		console.log(`  ${k.padEnd(18)} r=${Number.isNaN(r) ? '  n/a' : r.toFixed(3)}`);
 	}
 
-	// Histogram of ranks.
+	// Per-candidate Pearson — over every (entry, candidate) pair, label =
+	// whether that candidate is the gold (fix_symbol). This gives the
+	// variance hit-at-1 lacks in unanchored mode (hit1 is always 0).
+	console.log('\nPer-signal Pearson correlation, per-candidate (gold vs not):');
+	const candHits = dumpRows.map((r) => r.label);
+	for (const k of SIGNAL_KEYS) {
+		const xs = dumpRows.map((r) => r.signals?.[k] ?? 0);
+		const r = pearson(xs, candHits);
+		console.log(`  ${k.padEnd(18)} r=${Number.isNaN(r) ? '  n/a' : r.toFixed(3)}`);
+	}
+
 	const buckets = { '1': 0, '2-5': 0, '6-10': 0, miss: 0 };
 	for (const r of results) {
 		if (r.rank === 1) buckets['1']++;
@@ -232,6 +288,24 @@ function main() {
 	console.log('\nRank distribution:');
 	for (const [k, v] of Object.entries(buckets)) {
 		console.log(`  rank ${k.padEnd(5)} ${v}`);
+	}
+	return { signals: dumpRows };
+}
+
+function main() {
+	const opts = {
+		topN: 25,
+		legacy: process.argv.includes('--legacy'),
+	};
+	const modes = MODE === 'both' ? ['anchored', 'unanchored'] : [MODE];
+	const allSignals = [];
+	for (const m of modes) {
+		const res = scoreOne(m, opts);
+		allSignals.push(...res.signals);
+	}
+	if (SIGNAL_DUMP) {
+		writeFileSync(SIGNAL_DUMP, allSignals.map((r) => JSON.stringify(r)).join('\n') + '\n');
+		console.error(`signals dumped to ${SIGNAL_DUMP} (${allSignals.length} rows)`);
 	}
 }
 

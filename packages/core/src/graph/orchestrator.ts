@@ -31,8 +31,11 @@ export async function indexScope(opts: IndexOptions): Promise<IndexResult> {
   // symbols + edges + imports with it, but we delete imports explicitly in
   // case a future schema relaxes the cascade.
   if (opts.persist) {
+    // params + arg_bindings cascade with symbols/edges, so the existing CASCADE
+    // chain handles them — but we delete explicitly to be defensive against
+    // future schema relaxations and to surface ordering bugs early.
     db.exec(
-      "DELETE FROM imports; DELETE FROM edges; DELETE FROM symbols; DELETE FROM files;",
+      "DELETE FROM arg_bindings; DELETE FROM params; DELETE FROM imports; DELETE FROM edges; DELETE FROM symbols; DELETE FROM files;",
     );
   }
   // Stamp repo_root into meta so a moved sqlite is self-describing.
@@ -94,6 +97,12 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
   const insertImport = db.prepare(
     "INSERT INTO imports (file_id, local_name, source_module, source_name, kind) VALUES (?, ?, ?, ?, ?)",
   );
+  const insertParam = db.prepare(
+    "INSERT INTO params (symbol_id, position, name, type_text, has_default) VALUES (?, ?, ?, ?, ?)",
+  );
+  const insertArgBinding = db.prepare(
+    "INSERT INTO arg_bindings (edge_id, position, source_kind, source_text, source_symbol_id) VALUES (?, ?, ?, ?, NULL)",
+  );
 
   const tx = db.transaction((items: ExtractedFile[]) => {
     for (const f of items) {
@@ -145,11 +154,40 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
           : findFromKey(symbolIdsByKey, e.fromName);
         const fromId = fromKey ? symbolIdsByKey.get(fromKey) : undefined;
         if (!fromId) continue;
-        insertEdge.run(fromId, e.toName, e.kind, e.confidence, e.callLine);
+        const edgeRes = insertEdge.run(fromId, e.toName, e.kind, e.confidence, e.callLine);
+        const edgeId = edgeRes.lastInsertRowid as number;
+        if (e.argBindings && e.argBindings.length > 0) {
+          for (const ab of e.argBindings) {
+            insertArgBinding.run(edgeId, ab.position, ab.sourceKind, ab.sourceText);
+          }
+        }
       }
 
       for (const imp of f.imports) {
         insertImport.run(fileId, imp.localName, imp.sourceModule, imp.sourceName, imp.kind);
+      }
+
+      // Params: attach to the corresponding symbol id via the same
+      // (kind, parentName, name) key the edge loop uses. Only TS extracts
+      // these; for Python `symbolParams` is undefined and this loop is a
+      // no-op.
+      if (f.symbolParams) {
+        for (const sp of f.symbolParams) {
+          const key = sp.ownerParentName
+            ? `${sp.ownerKind}:${sp.ownerParentName}.${sp.ownerName}`
+            : `${sp.ownerKind}:${sp.ownerName}`;
+          const symbolId = symbolIdsByKey.get(key);
+          if (!symbolId) continue;
+          for (const p of sp.params) {
+            insertParam.run(
+              symbolId,
+              p.position,
+              p.name,
+              p.typeText,
+              p.hasDefault ? 1 : 0,
+            );
+          }
+        }
       }
     }
   });
