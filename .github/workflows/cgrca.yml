@@ -30,7 +30,7 @@ jobs:
   cgrca:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # cgrca uses git log -L for the recency signal — we need history,
           # not just the tip. fetch-depth: 0 fetches everything; reduce if
