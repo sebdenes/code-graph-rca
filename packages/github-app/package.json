@@ -43,7 +43,7 @@
   "dependencies": {
     "@octokit/app": "^15.1.0",
     "@octokit/rest": "^22.0.1",
-    "@octokit/webhooks": "^13.4.1",
+    "@octokit/webhooks": "^14.2.0",
     "code-graph-rca": "^0.4.4",
     "fastify": "^5.0.0"
   },
