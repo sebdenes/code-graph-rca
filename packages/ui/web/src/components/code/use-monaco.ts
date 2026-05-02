@@ -7,7 +7,7 @@ export interface UseMonacoApi {
   /** Callback to wire into the React wrapper's `onMount`. */
   onMount: (ed: editor.IStandaloneCodeEditor) => void;
   /** Container ref for ResizeObserver wiring. */
-  container: React.RefObject<HTMLDivElement>;
+  container: React.RefObject<HTMLDivElement | null>;
   /** Scroll the editor so `line` (1-based) is centered. */
   revealLine: (line: number) => void;
   /** Replace all view zones with `zones`. Old zone IDs are removed. */

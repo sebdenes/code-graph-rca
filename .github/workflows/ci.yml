@@ -32,19 +32,18 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - name: Install
-        # `npm ci` strips platform-specific optional deps on Linux runners
-        # for packages installed from a different platform's lockfile —
-        # vite 8 → rolldown native bindings hit npm/cli#4828, which surfaces
-        # as "Cannot find module '@rolldown/binding-linux-x64-gnu'" during
-        # the UI build. Force-install missing platform optionals after the
-        # deterministic `npm ci` so we don't regress lockfile fidelity.
+        # npm/cli#4828: `npm ci` strips platform-specific optional deps when
+        # the lockfile was generated on a different OS. vite/rollup,
+        # rolldown, lightningcss, and @tailwindcss/oxide all ship native
+        # bindings as optionals, so `npm ci` on a Linux runner from a macOS
+        # lockfile loses every one of them, breaking the UI build with
+        # "Cannot find module '...linux-x64-gnu...'" errors. The npm error
+        # message itself recommends removing node_modules + package-lock and
+        # reinstalling — do exactly that. Lockfile is still committed for
+        # reproducibility on the install-author's platform; CI rebuilds.
         run: |
-          npm ci
-          npm install --no-save --include=optional --force \
-            @rollup/rollup-linux-x64-gnu \
-            @rolldown/binding-linux-x64-gnu \
-            @tailwindcss/oxide-linux-x64-gnu \
-            || true
+          rm -rf node_modules
+          npm install --no-audit --no-fund
       - name: Build (core)
         run: npm -w packages/core run build
       - name: Build (ui)
@@ -68,7 +67,12 @@ jobs:
           node-version: "22"
           cache: npm
       - name: Install
-        run: npm ci
+        # Same npm/cli#4828 workaround as the build-test job — lightningcss
+        # / rollup native bindings need to land for the UI typecheck path
+        # too (vite.config.ts is included in the typecheck program).
+        run: |
+          rm -rf node_modules
+          npm install --no-audit --no-fund
       - name: Build (core)
         # UI tsconfig references `code-graph-rca` (the core package); without
         # building core first, every UI tsc run errors with TS2307.
