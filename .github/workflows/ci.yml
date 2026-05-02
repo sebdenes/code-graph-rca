@@ -41,6 +41,7 @@ jobs:
         run: |
           npm ci
           npm install --no-save --include=optional --force \
+            @rollup/rollup-linux-x64-gnu \
             @rolldown/binding-linux-x64-gnu \
             @tailwindcss/oxide-linux-x64-gnu \
             || true
