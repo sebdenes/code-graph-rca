@@ -15,6 +15,7 @@ import type {
   CausalCandidate,
   Definition,
   RecentChange,
+  SymbolKind,
 } from "../types.js";
 import { languageOf, walk } from "../graph/walker.js";
 import { buildGraphContext } from "./context.js";
@@ -25,7 +26,7 @@ import {
   hydrateCalleeTree,
 } from "./recency.js";
 import { buildCausalChain } from "./causal.js";
-import { tokenizeFailure, matchTokensAgainstKg } from "./textmode.js";
+import { tokenizeFailure, matchTokensAgainstKg, type TokenMatch } from "./textmode.js";
 import type { Db } from "../graph/db.js";
 
 export type FailureScope =
@@ -587,7 +588,24 @@ async function runFreeTextRca(
     });
     if (merged.topAnchorName) primarySymbol = merged.topAnchorName;
 
-    return finalizeResult(req, notes, queries, primarySymbol, merged.candidates, {
+    // Augment with matcher's substring-only candidates that didn't survive
+    // the multi-anchor walk. Without this, prose like "Events fetch failed
+    // ... retry on transient 5xx" produces 8 seeds all named "errors"
+    // (exact-match domination), graph walks expand from those, and
+    // substring-matched fix symbols (`fetch_planned_events`,
+    // `_retry_async`) — which ARE in the matcher's top-30 — are lost.
+    // Cap at topN extras so we don't pollute the ranking; score by
+    // matcher's totalScore lifted into the candidate scorer's range.
+    const targetN = req.topN ?? 5;
+    const augmentedTopN = Math.max(targetN * 2, 10);
+    const augmented = augmentWithMatcherTail(
+      indexed.db,
+      merged.candidates,
+      matches,
+      augmentedTopN,
+    );
+
+    return finalizeResult(req, notes, queries, primarySymbol, augmented, {
       files: broadFiles,
       symbolCount: indexed.symbolCount,
       edgeCount: indexed.edgeCount,
@@ -595,6 +613,81 @@ async function runFreeTextRca(
   } finally {
     indexed.db.close();
   }
+}
+
+/**
+ * Append matcher candidates that DIDN'T appear in the multi-anchor merged
+ * output. Lifts the substring-only matches that lose to exact-match seed
+ * domination during the graph walk. Returns at most `cap` total entries.
+ *
+ * Score for appended entries uses the matcher's totalScore, scaled into
+ * the bottom of the existing range so they rank below walked candidates
+ * but above untouched symbols. This mirrors how `--llm` re-ranking can
+ * later promote them on the basis of body-content fit.
+ */
+function augmentWithMatcherTail(
+  db: Db,
+  walked: CausalCandidate[],
+  matches: TokenMatch[],
+  cap: number,
+): CausalCandidate[] {
+  if (walked.length >= cap || matches.length === 0) return walked.slice(0, cap);
+  // Track existing (file, name) so we don't duplicate.
+  const seen = new Set<string>();
+  for (const c of walked) seen.add(`${c.file ?? ""}|${c.name}`);
+
+  const lowestScore = walked.length > 0 ? walked[walked.length - 1]!.score : 0.5;
+  const out: CausalCandidate[] = [...walked];
+  for (const m of matches) {
+    if (out.length >= cap) break;
+    const key = `${m.file ?? ""}|${m.symbolName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // Hydrate kind/loc/subsystem from the indexed DB if available.
+    let kind: SymbolKind | null = null;
+    let loc: number | null = null;
+    let subsystem: string | null = null;
+    try {
+      const row = db
+        .prepare(
+          "SELECT s.kind AS kind, s.end_line - s.start_line + 1 AS loc, f.subsystem AS subsystem FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?",
+        )
+        .get(m.symbolId) as { kind: string; loc: number; subsystem: string | null } | undefined;
+      if (row) {
+        kind = row.kind as SymbolKind;
+        loc = row.loc;
+        subsystem = row.subsystem;
+      }
+    } catch {
+      // best-effort; leave nulls
+    }
+    out.push({
+      name: m.symbolName,
+      file: m.file,
+      line: m.line,
+      kind,
+      loc,
+      subsystem,
+      role: "anchor",
+      distance: 0,
+      // Score below the lowest walked candidate but above 0; preserves
+      // matcher's relative ranking among the appended tail.
+      score: Math.min(lowestScore - 0.01, m.totalScore * 0.5),
+      signals: {
+        recencyScore: 0,
+        proximityScore: 0,
+        ambiguityScore: 0,
+        coChangeScore: 0,
+        subsystemScore: 0,
+        complexityScore: 0,
+        dataflowScore: 0,
+      },
+      rationale: `Matcher tail: surfaced by free-text token search (matcher score ${m.totalScore.toFixed(2)}); didn't survive seed-driven graph walk.`,
+      recentChanges: [],
+      unresolvedCallTargets: [],
+    });
+  }
+  return out;
 }
 
 /**
