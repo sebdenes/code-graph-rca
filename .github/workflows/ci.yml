@@ -32,7 +32,18 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - name: Install
-        run: npm ci
+        # npm/cli#4828: `npm ci` strips platform-specific optional deps when
+        # the lockfile was generated on a different OS. vite/rollup,
+        # rolldown, lightningcss, and @tailwindcss/oxide all ship native
+        # bindings as optionals, so `npm ci` on a Linux runner from a macOS
+        # lockfile loses every one of them, breaking the UI build with
+        # "Cannot find module '...linux-x64-gnu...'" errors. The npm error
+        # message itself recommends removing node_modules + package-lock and
+        # reinstalling — do exactly that. Lockfile is still committed for
+        # reproducibility on the install-author's platform; CI rebuilds.
+        run: |
+          rm -rf node_modules package-lock.json
+          npm install --no-audit --no-fund --include=optional --legacy-peer-deps
       - name: Build (core)
         run: npm -w packages/core run build
       - name: Build (ui)
@@ -56,6 +67,15 @@ jobs:
           node-version: "22"
           cache: npm
       - name: Install
-        run: npm ci
+        # Same npm/cli#4828 workaround as the build-test job — lightningcss
+        # / rollup native bindings need to land for the UI typecheck path
+        # too (vite.config.ts is included in the typecheck program).
+        run: |
+          rm -rf node_modules package-lock.json
+          npm install --no-audit --no-fund --include=optional --legacy-peer-deps
+      - name: Build (core)
+        # UI tsconfig references `code-graph-rca` (the core package); without
+        # building core first, every UI tsc run errors with TS2307.
+        run: npm -w packages/core run build
       - name: Typecheck (ui)
         run: npm -w packages/ui run typecheck

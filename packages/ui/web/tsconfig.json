@@ -19,7 +19,8 @@
       "@/*": ["./src/*"],
       "@shared/*": ["../shared/*"]
     },
-    "baseUrl": "."
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0"
   },
   "include": ["src/**/*", "../shared/**/*", "vite.config.ts"]
 }

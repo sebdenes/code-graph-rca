@@ -431,7 +431,7 @@ interface TopBarProps {
   search: string;
   onSearch: (s: string) => void;
   onSubmit: () => void;
-  searchRef: React.RefObject<HTMLInputElement>;
+  searchRef: React.RefObject<HTMLInputElement | null>;
 }
 
 function TopBar(props: TopBarProps) {
