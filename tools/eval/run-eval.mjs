@@ -64,7 +64,7 @@ function parseArgs(argv) {
 function USAGE() {
 	return `Usage:
   node tools/eval/run-eval.mjs --corpus <path> --repo <path>
-                               [--modes current,text,file,baseline-grep]
+                               [--modes current,text,file,baseline-grep,llm,llm-codebase]
                                [--cgrca <bin>] [--timeout <ms>]
                                [--top-n <n>] [--json]
                                [--out <path>] [--limit <n>]
@@ -74,7 +74,13 @@ Required:
   --repo <path>     Repo root the corpus was labeled against.
 
 Optional:
-  --modes <list>    Comma-separated subset of: current,text,file,baseline-grep
+  --modes <list>    Comma-separated subset of:
+                      current        legacy bare→symbol parse
+                      text           cgrca free-text retrieval (no LLM)
+                      file           cgrca with file: hint
+                      baseline-grep  naive grep
+                      llm            cgrca free-text + LLM re-rank (Phase 2)
+                      llm-codebase   @codebase-style: BM25 over content + LLM (Phase 4 gate)
                     Default: current,text,file
   --cgrca <bin>     Path/name of the cgrca binary. Default: 'cgrca' (PATH).
   --timeout <ms>    Per-invocation cap. Default: 30000.
@@ -85,8 +91,15 @@ Optional:
   --limit <n>       Only run the first N corpus entries (smoke test).
 
 Env:
-  CGRCA_TEXT_FLAG   Extra flag appended only to the 'text' mode invocation
-                    (e.g. '--experimental-text'). Empty by default.
+  CGRCA_TEXT_FLAG     Extra flag appended only to the 'text' mode invocation.
+  CGRCA_CURRENT_FLAG  Extra flag appended only to the 'current' mode (default
+                      '--legacy-parse' for honest A/B against Phase 1 baseline).
+  CGRCA_LLM_PROVIDER  'anthropic' (default) or 'openai'.
+  CGRCA_LLM_MODEL     Model id for llm + llm-codebase modes.
+                      Anthropic default: claude-sonnet-4-6.
+                      OpenAI default: gpt-4o-mini.
+  ANTHROPIC_API_KEY   Required for llm + llm-codebase modes (anthropic provider).
+  OPENAI_API_KEY      Required for openai provider. Optional OPENAI_BASE_URL.
 `;
 }
 
@@ -120,7 +133,7 @@ const MODES = String(args.flags.modes ?? 'current,text,file')
 	.map((s) => s.trim())
 	.filter(Boolean);
 
-const KNOWN_MODES = new Set(['current', 'text', 'file', 'baseline-grep', 'llm']);
+const KNOWN_MODES = new Set(['current', 'text', 'file', 'baseline-grep', 'llm', 'llm-codebase']);
 for (const m of MODES) {
 	if (!KNOWN_MODES.has(m)) {
 		process.stderr.write(`run-eval: unknown mode '${m}'. Known: ${[...KNOWN_MODES].join(',')}\n`);
@@ -197,6 +210,9 @@ function runCgrca(failureArg, { extraFlags = [] } = {}) {
 		'--json',
 		'--top-n',
 		String(TOP_N),
+		...(process.env.CGRCA_MAX_FILES
+			? ['--max-files', process.env.CGRCA_MAX_FILES]
+			: []),
 		...extraFlags,
 	];
 	const t0 = Date.now();
@@ -406,7 +422,38 @@ function runMode(mode, entry) {
 		// Cheapest fix: have runCgrca attach the full parsed object so we can read llm.
 		return r;
 	}
+	if (mode === 'llm-codebase') {
+		// "@codebase-style" baseline (v0.5 plan kill criterion gate). No graph,
+		// no cgrca — just BM25-lite over file content + LLM picks. Implemented
+		// in tools/eval/llm-codebase-baseline.mjs to keep zero deps.
+		return runLlmCodebaseBaseline(entry);
+	}
 	return { ok: false, ms: 0, err: `unknown mode ${mode}` };
+}
+
+function runLlmCodebaseBaseline(entry) {
+	const t0 = Date.now();
+	const cliArgs = [
+		resolve('tools/eval/llm-codebase-baseline.mjs'),
+		'--repo', REPO_ABS,
+		'--failure', entry.failure_description,
+		'--provider', LLM_PROVIDER,
+	];
+	if (LLM_MODEL) cliArgs.push('--model', LLM_MODEL);
+	const res = spawnSync('node', cliArgs, {
+		encoding: 'utf8',
+		maxBuffer: 64 * 1024 * 1024,
+		timeout: TIMEOUT_MS,
+	});
+	const ms = Date.now() - t0;
+	if (res.error) return { ok: false, ms, err: `${res.error.code ?? ''} ${res.error.message}`.trim() };
+	if (res.status !== 0) return { ok: false, ms, err: `exit ${res.status}: ${(res.stderr || '').slice(0, 500)}` };
+	let parsed;
+	try { parsed = JSON.parse(res.stdout); } catch (err) { return { ok: false, ms, err: `json parse: ${err.message}` }; }
+	// Fake "candidates" array so the scorer sees one entry — the LLM's pick.
+	const rc = parsed.verdict?.rootCause;
+	const candidates = rc ? [{ file: rc.file, name: rc.symbol, line: rc.line }] : [];
+	return { ok: true, ms, candidates, llm: parsed };
 }
 
 function fmt(n) {
@@ -460,6 +507,17 @@ function killCriterionLine(summary) {
 	return `Phase 1 kill criterion (text >= 2x current top-1): ${pass ? 'PASS' : 'FAIL'} (ratio=${ratioStr}, current=${fmt(cur)}, text=${fmt(txt)})`;
 }
 
+function killCriterionPhase4Line(summary) {
+	// docs/v0.5-plan.md Phase 4: cgrca rca --llm must beat @codebase-style
+	// retrieval (`llm-codebase` mode) by >=10pp top-1.
+	const llm = summary.llm?.top1;
+	const baseline = summary['llm-codebase']?.top1;
+	if (!Number.isFinite(llm) || !Number.isFinite(baseline)) return null;
+	const delta = llm - baseline;
+	const pass = delta >= 0.10;
+	return `Phase 4 kill criterion (llm >= llm-codebase + 10pp top-1): ${pass ? 'PASS' : 'FAIL'} (llm=${fmt(llm)}, llm-codebase=${fmt(baseline)}, Δ=${(delta * 100).toFixed(1)}pp)`;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -495,9 +553,11 @@ for (const entry of entries) {
 			process.stderr.write(`  [${i}/${entries.length}] ${id} ${mode}: ERR (${res.err})\n`);
 			continue;
 		}
-		// LLM mode scores against the verdict's rootCause as a single
-		// "candidate" — the LLM either picked the right thing or it didn't.
-		// rootCause=null counts as a miss (LLM honestly declined).
+		// LLM modes (llm + llm-codebase) score against the verdict's rootCause
+		// as a single "candidate" — the LLM either picked the right thing or
+		// it didn't. rootCause=null counts as a miss (LLM honestly declined).
+		// llm-codebase already pre-fills res.candidates with the rootCause.
+		const isLlmMode = mode === 'llm' || mode === 'llm-codebase';
 		const candidatesForScoring =
 			mode === 'llm' && res.llm
 				? (res.llm.verdict?.rootCause
@@ -512,9 +572,9 @@ for (const entry of entries) {
 			nCandidates: score.nCandidates,
 			rank: score.rank,
 			score,
-			...(mode === 'llm' && res.llm ? { llmCostUsd: res.llm.cost?.usd ?? 0 } : {}),
+			...(isLlmMode && res.llm ? { llmCostUsd: res.llm.cost?.usd ?? 0 } : {}),
 		});
-		const tail = mode === 'llm' && res.llm ? ` $${(res.llm.cost?.usd ?? 0).toFixed(4)}` : '';
+		const tail = isLlmMode && res.llm ? ` $${(res.llm.cost?.usd ?? 0).toFixed(4)}` : '';
 		process.stderr.write(
 			`  [${i}/${entries.length}] ${id} ${mode}: rank=${score.rank || 'miss'} ` +
 				`(${score.nCandidates} cand, ${res.ms}ms${tail})\n`,
@@ -527,6 +587,8 @@ const table = renderTable(summary);
 process.stdout.write('\n' + table + '\n');
 const kill = killCriterionLine(summary);
 if (kill) process.stdout.write('\n' + kill + '\n');
+const kill4 = killCriterionPhase4Line(summary);
+if (kill4) process.stdout.write(kill4 + '\n');
 
 const out = {
 	createdAt: new Date().toISOString(),
