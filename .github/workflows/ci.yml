@@ -32,7 +32,18 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - name: Install
-        run: npm ci
+        # `npm ci` strips platform-specific optional deps on Linux runners
+        # for packages installed from a different platform's lockfile —
+        # vite 8 → rolldown native bindings hit npm/cli#4828, which surfaces
+        # as "Cannot find module '@rolldown/binding-linux-x64-gnu'" during
+        # the UI build. Force-install missing platform optionals after the
+        # deterministic `npm ci` so we don't regress lockfile fidelity.
+        run: |
+          npm ci
+          npm install --no-save --include=optional --force \
+            @rolldown/binding-linux-x64-gnu \
+            @tailwindcss/oxide-linux-x64-gnu \
+            || true
       - name: Build (core)
         run: npm -w packages/core run build
       - name: Build (ui)
@@ -57,5 +68,9 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
+      - name: Build (core)
+        # UI tsconfig references `code-graph-rca` (the core package); without
+        # building core first, every UI tsc run errors with TS2307.
+        run: npm -w packages/core run build
       - name: Typecheck (ui)
         run: npm -w packages/ui run typecheck
