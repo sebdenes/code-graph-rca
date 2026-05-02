@@ -1,6 +1,6 @@
 {
   "name": "code-graph-rca-github-app",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "GitHub PR-review for code-graph-rca — works as a GitHub App (hosted webhook) OR as a GitHub Action (no hosting). Posts ranked causal candidates + blast-radius comments on every PR.",
   "type": "module",
   "license": "MIT",
@@ -44,7 +44,7 @@
     "@octokit/app": "^15.1.0",
     "@octokit/rest": "^21.1.1",
     "@octokit/webhooks": "^13.4.1",
-    "code-graph-rca": "^0.3.0",
+    "code-graph-rca": "^0.4.0",
     "fastify": "^5.0.0"
   },
   "devDependencies": {
