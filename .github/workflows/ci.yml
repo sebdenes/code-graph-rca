@@ -1,0 +1,61 @@
+# Real CI — install, build, test all 3 packages on every PR + push to main.
+# The cgrca.yml workflow runs the cgrca PR-review bot as a separate "check"
+# (descriptive, not a real test run). This workflow is the actual gate.
+name: ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build + test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Build (core)
+        run: npm -w packages/core run build
+      - name: Build (ui)
+        run: npm -w packages/ui run build
+      - name: Build (github-app)
+        run: npm -w packages/github-app run build
+      - name: Test (core)
+        run: npm -w packages/core test
+      - name: Test (ui)
+        run: npm -w packages/ui test
+      - name: Test (github-app)
+        run: npm -w packages/github-app test
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Typecheck (ui)
+        run: npm -w packages/ui run typecheck
