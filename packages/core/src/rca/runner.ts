@@ -16,8 +16,8 @@ import type {
   Definition,
   RecentChange,
 } from "../types.js";
-import { buildCausalChainSection, buildGraphContext } from "./context.js";
-import { buildPrompt } from "./prompt.js";
+import { buildGraphContext } from "./context.js";
+import { formatRcaPrompt } from "./prompt.js";
 import {
   createRecencyHydrator,
   hydrateCallerTree,
@@ -37,6 +37,20 @@ export interface RcaRequest {
   budget?: { maxFiles?: number; maxLoc?: number; maxDepth?: number };
   /** Persist the indexed graph to this SQLite file path. Default: in-memory. */
   persist?: string;
+  /** Override top-N candidates returned by the causal scorer. Default 5. */
+  topN?: number;
+  /** Use the pre-calibration hand-set weights for an A/B comparison.
+   *  Default false (use the learned, calibrated weights). */
+  useLegacyWeights?: boolean;
+  /**
+   * Output shape. `'prompt'` (default, backward-compat) populates
+   * `RcaResult.prompt` with the full markdown RCA prompt. `'structured'`
+   * skips prompt formatting entirely — `RcaResult.prompt` is set to `""`.
+   * Consumers that build their own format (CLI ranked table, MCP grounding,
+   * GitHub-App comments) should opt into `'structured'` and call
+   * {@link formatRcaPrompt} themselves only if they need the markdown.
+   */
+  format?: "prompt" | "structured";
 }
 
 export interface RcaResult {
@@ -44,6 +58,12 @@ export interface RcaResult {
   scope: { files: string[]; symbolCount: number; edgeCount: number };
   queries: Array<{ name: string; result: unknown }>;
   primarySymbol: string | null;
+  /**
+   * Full markdown RCA prompt. Populated when `RcaRequest.format === 'prompt'`
+   * (the default, for backward-compat). Empty string when
+   * `RcaRequest.format === 'structured'` — call {@link formatRcaPrompt} on
+   * the structured fields if you want to render it lazily.
+   */
   prompt: string;
   notes: string[];
   causalCandidates: CausalCandidate[];
@@ -63,14 +83,18 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
     const scope = { files: [] as string[], symbolCount: 0, edgeCount: 0 };
     const graphContext = buildGraphContext({ primarySymbol, scope, queries });
     const causalCandidates: CausalCandidate[] = [];
-    const causalSection = buildCausalChainSection(causalCandidates);
     const firstHypothesis: string | null = null;
-    const prompt = buildPrompt({
-      failure: req.failureScope,
-      graphContext,
-      causalSection,
-      firstHypothesis,
-    });
+    const prompt =
+      (req.format ?? "prompt") === "structured"
+        ? ""
+        : formatRcaPrompt({
+            failure: req.failureScope,
+            scope,
+            causalCandidates,
+            firstHypothesis,
+            queries,
+            primarySymbol,
+          });
     return {
       graphContext,
       scope,
@@ -196,7 +220,11 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
             calleeTree,
             db: indexed.db,
           },
-          { recencyDays: 90, topN: 5 },
+          {
+            recencyDays: 90,
+            topN: req.topN ?? 5,
+            ...(req.useLegacyWeights ? { useLegacyWeights: true } : {}),
+          },
         );
       } catch (err) {
         notes.push(
@@ -213,13 +241,17 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
       edgeCount: indexed.edgeCount,
     };
     const graphContext = buildGraphContext({ primarySymbol, scope, queries });
-    const causalSection = buildCausalChainSection(causalCandidates);
-    const prompt = buildPrompt({
-      failure: req.failureScope,
-      graphContext,
-      causalSection,
-      firstHypothesis,
-    });
+    const prompt =
+      (req.format ?? "prompt") === "structured"
+        ? ""
+        : formatRcaPrompt({
+            failure: req.failureScope,
+            scope,
+            causalCandidates,
+            firstHypothesis,
+            queries,
+            primarySymbol,
+          });
 
     return {
       graphContext,

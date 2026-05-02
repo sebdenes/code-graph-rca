@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statSync, existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { createRequire } from "node:module";
 import type { Ignore } from "ignore";
@@ -65,6 +65,9 @@ export function walk(repoRoot: string, opts: WalkOptions = {}): DiscoveredFile[]
   const ig = loadGitignore(repoRoot);
   const out: DiscoveredFile[] = [];
   const seen = new Set<string>();
+  // Track resolved real paths of directories already visited to break symlink loops
+  // (e.g. `ln -s . loop` inside the indexed scope would otherwise recurse forever).
+  const seenDirs = new Set<string>();
   const max = opts.maxFiles ?? Infinity;
 
   const scope = opts.scope?.map((p) => p.split(sep).join("/"));
@@ -77,12 +80,23 @@ export function walk(repoRoot: string, opts: WalkOptions = {}): DiscoveredFile[]
 
   function visit(absDir: string): void {
     if (out.length >= max) return;
+    let real: string;
+    try {
+      real = realpathSync(absDir);
+    } catch {
+      return;
+    }
+    if (seenDirs.has(real)) return;
+    seenDirs.add(real);
     let entries;
     try {
       entries = readdirSync(absDir, { withFileTypes: true });
     } catch {
       return;
     }
+    // Sort lexicographically so traversal order is stable across filesystems
+    // (macOS APFS / ext4 don't otherwise guarantee any particular order).
+    entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const ent of entries) {
       if (out.length >= max) return;
       const abs = join(absDir, ent.name);
@@ -96,7 +110,26 @@ export function walk(repoRoot: string, opts: WalkOptions = {}): DiscoveredFile[]
         visit(abs);
         continue;
       }
-      if (!ent.isFile() && !ent.isSymbolicLink()) continue;
+      // A symlink may point at a directory; if so, recurse (with the seenDirs
+      // guard preventing loops). Otherwise treat as a file.
+      if (ent.isSymbolicLink()) {
+        let st;
+        try {
+          st = statSync(abs);
+        } catch {
+          continue;
+        }
+        if (st.isDirectory()) {
+          if (IGNORE_DIRS.has(ent.name)) continue;
+          const relForIgnore = rel + "/";
+          if (ig.ignores(relForIgnore)) continue;
+          visit(abs);
+          continue;
+        }
+        if (!st.isFile()) continue;
+      } else if (!ent.isFile()) {
+        continue;
+      }
 
       if (ig.ignores(rel)) continue;
       if (!inScope(rel)) continue;

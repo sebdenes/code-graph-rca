@@ -118,6 +118,34 @@
       name: (identifier) @symbol.name
       value: (function_expression))) @symbol.const) @symbol.exported
 
+; ---------------- Locals ----------------
+; Capture every lexical_declaration / variable_declaration node — no anchor.
+; The extractor walks the captured node's ancestors to find the nearest
+; enclosing function-shaped node (function_declaration, function_expression,
+; arrow_function, method_definition); if none exists the local is dropped.
+; This covers depth-1 (top-level body) AND deeper nested-block locals (inside
+; if/while/for/try blocks) in one pattern. Loop-iteration vars are captured
+; via for_in_statement / for_statement below. Destructuring patterns
+; (object_pattern / array_pattern) are expanded by the extractor — it walks
+; into the binding side and emits one local per identifier it finds, skipping
+; nested function bodies along the way.
+;
+; @symbol.localdecl marks the whole declaration so the extractor can locate
+; both the binding-side pattern and the enclosing function. Name capture is
+; deliberately omitted here; the extractor handles the (potentially many)
+; names emitted per declaration.
+
+(lexical_declaration) @symbol.localdecl
+(variable_declaration) @symbol.localdecl
+
+; Loop iteration variables. for_in_statement covers `for (x of arr)` and
+; `for (x in obj)`; for_statement covers C-style `for (let i = 0; ...)`. The
+; extractor reads the `left` / `initializer` field and emits one local per
+; identifier (handling destructuring patterns the same way as lexical_declaration).
+
+(for_in_statement) @symbol.loopvar
+(for_statement) @symbol.loopvar
+
 ; ---------------- Calls ----------------
 
 ; Direct identifier callee: foo()
@@ -138,6 +166,23 @@
     object: (member_expression
       property: (property_identifier) @call.object)
     property: (property_identifier) @call.callee))
+
+; ---------------- Params ----------------
+; Capture the formal_parameters node of each function-shaped symbol. The
+; extractor walks the children to enumerate required_parameter and
+; optional_parameter nodes and collects (name, type, has_default) per slot.
+
+(function_declaration
+  parameters: (formal_parameters) @symbol.params)
+
+(function_expression
+  parameters: (formal_parameters) @symbol.params)
+
+(arrow_function
+  parameters: (formal_parameters) @symbol.params)
+
+(method_definition
+  parameters: (formal_parameters) @symbol.params)
 
 ; ---------------- Imports ----------------
 ; import_statement → import_clause → (named_imports | namespace_import | identifier)

@@ -8,6 +8,8 @@ import type {
   Definition,
   GitChange,
   Language,
+  PathEdgeKind,
+  PathStep,
   SymbolKind,
   SymbolSummary,
 } from "../types.js";
@@ -228,7 +230,7 @@ function walkDown(
 
   const rows = db
     .prepare(
-      `SELECT e.to_name, e.to_symbol_id, e.confidence, e.call_line, f.path AS to_path
+      `SELECT e.to_name, e.to_symbol_id, e.confidence, e.call_line, e.resolution_kind, f.path AS to_path
          FROM edges e
          LEFT JOIN symbols s ON s.id = e.to_symbol_id
          LEFT JOIN files f ON f.id = s.file_id
@@ -240,6 +242,7 @@ function walkDown(
       to_symbol_id: number | null;
       confidence: number;
       call_line: number | null;
+      resolution_kind: import("../types.js").ResolutionKind | null;
       to_path: string | null;
     }>;
 
@@ -253,6 +256,7 @@ function walkDown(
         file: r.to_path,
         line: r.call_line,
         confidence: r.confidence,
+        resolutionKind: r.resolution_kind,
         callees: [],
       };
       seen.set(key, node);
@@ -345,10 +349,14 @@ export function recentlyChangedNear(
       const author = parts[1];
       const date = parts[2];
       const subject = parts.slice(3).join("\t");
-      if (!sha || !author || !date) continue;
+      // `author` is decorative — squash-merge bots, anonymous contributors,
+      // and malformed `.mailmap` files can yield an empty %an. Causal scoring
+      // only depends on sha + date, so accept the commit and surface
+      // "unknown" rather than silently dropping a real candidate.
+      if (!sha || !date) continue;
       collected.push({
         commit: sha,
-        author,
+        author: author && author.length > 0 ? author : "unknown",
         date,
         subject,
         file: row.path,
@@ -359,4 +367,168 @@ export function recentlyChangedNear(
 
   collected.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   return collected.slice(0, maxCommits);
+}
+
+export interface PathBetweenOptions {
+  /** Maximum number of edges to traverse before giving up. Default 5. */
+  maxDepth?: number;
+}
+
+interface SymbolMeta {
+  id: number;
+  name: string;
+  file: string;
+  startLine: number;
+}
+
+/**
+ * BFS over the union of CALLS edges and arg-binding flow edges.
+ *
+ * Edge model:
+ * - CALLS: from caller symbol → callee symbol (resolved edges only).
+ * - ARG_BIND: from a *producer* symbol → the caller's enclosing function/method.
+ *   Rationale: when `caller(userId)` invokes `callee(userId)` and `userId`
+ *   resolves back to some producer symbol (a const, an exported function,
+ *   etc.), data is flowing producer → caller. We treat the directionality as
+ *   producer → caller so that traversing from a value's source toward where
+ *   it's consumed is one BFS step.
+ *
+ * Returns the shortest sequence of symbols joining `fromName` and `toName`.
+ * Each step records how it was reached from the previous one (`edgeKind`)
+ * and the call site line for CALLS hops where available. The seed step has
+ * `edgeKind: null`.
+ */
+export function pathBetween(
+  db: Db,
+  fromName: string,
+  toName: string,
+  opts: PathBetweenOptions = {},
+): PathStep[] | null {
+  const maxDepth = Math.max(1, Math.min(opts.maxDepth ?? 5, 10));
+
+  const lookupByName = db.prepare(
+    `SELECT s.id, s.name, f.path AS file, s.start_line AS startLine
+       FROM symbols s
+       JOIN files f ON f.id = s.file_id
+      WHERE s.name = ?`,
+  );
+  const fromSeeds = lookupByName.all(fromName) as SymbolMeta[];
+  const toSeedSet = new Set(
+    (lookupByName.all(toName) as SymbolMeta[]).map((r) => r.id),
+  );
+  if (fromSeeds.length === 0 || toSeedSet.size === 0) return null;
+
+  // Per-step neighbor query: outgoing CALLS edges resolved to a target.
+  const callsOut = db.prepare(
+    `SELECT e.to_symbol_id AS id, e.call_line AS callLine
+       FROM edges e
+      WHERE e.from_symbol_id = ?
+        AND e.kind = 'CALLS'
+        AND e.to_symbol_id IS NOT NULL`,
+  );
+  // Outgoing arg-binding flow edge: this symbol is a producer that flows
+  // into the caller of any call site where it appears as an identifier arg.
+  // We hop from `?` (producer) to the caller-side symbol (`from_symbol_id`
+  // of the edge whose arg references the producer).
+  const argFlowOut = db.prepare(
+    `SELECT DISTINCT e.from_symbol_id AS id
+       FROM arg_bindings ab
+       JOIN edges e ON e.id = ab.edge_id
+      WHERE ab.source_symbol_id = ?
+        AND ab.source_kind = 'identifier'`,
+  );
+  const symMeta = db.prepare(
+    `SELECT s.id, s.name, f.path AS file, s.start_line AS startLine
+       FROM symbols s
+       JOIN files f ON f.id = s.file_id
+      WHERE s.id = ?`,
+  );
+
+  // BFS: parents[childId] = { parent, edgeKind, edgeLine }
+  interface Crumb {
+    parent: number;
+    edgeKind: PathEdgeKind;
+    edgeLine: number | null;
+  }
+  const parents = new Map<number, Crumb>();
+  const queue: Array<{ id: number; depth: number }> = [];
+  const seedIds: number[] = [];
+  for (const s of fromSeeds) {
+    if (toSeedSet.has(s.id)) {
+      // Trivial same-symbol match.
+      return [
+        { name: s.name, file: s.file, line: s.startLine, edgeKind: null },
+      ];
+    }
+    queue.push({ id: s.id, depth: 0 });
+    parents.set(s.id, { parent: -1, edgeKind: "CALLS", edgeLine: null });
+    seedIds.push(s.id);
+  }
+
+  let goalId: number | null = null;
+  while (queue.length > 0) {
+    const { id, depth } = queue.shift()!;
+    if (depth >= maxDepth) continue;
+    const callRows = callsOut.all(id) as Array<{
+      id: number | null;
+      callLine: number | null;
+    }>;
+    for (const r of callRows) {
+      if (r.id === null) continue;
+      if (parents.has(r.id)) continue;
+      parents.set(r.id, {
+        parent: id,
+        edgeKind: "CALLS",
+        edgeLine: r.callLine,
+      });
+      if (toSeedSet.has(r.id)) {
+        goalId = r.id;
+        break;
+      }
+      queue.push({ id: r.id, depth: depth + 1 });
+    }
+    if (goalId !== null) break;
+    const flowRows = argFlowOut.all(id) as Array<{ id: number }>;
+    for (const r of flowRows) {
+      if (parents.has(r.id)) continue;
+      parents.set(r.id, {
+        parent: id,
+        edgeKind: "ARG_BIND",
+        edgeLine: null,
+      });
+      if (toSeedSet.has(r.id)) {
+        goalId = r.id;
+        break;
+      }
+      queue.push({ id: r.id, depth: depth + 1 });
+    }
+    if (goalId !== null) break;
+  }
+
+  if (goalId === null) return null;
+
+  // Reconstruct.
+  const reverse: Array<{ id: number; edgeKind: PathEdgeKind | null; line: number | null }> = [];
+  let cursor: number | null = goalId;
+  while (cursor !== null && cursor !== -1) {
+    const crumb = parents.get(cursor);
+    if (!crumb) break;
+    const isSeed = crumb.parent === -1;
+    reverse.push({
+      id: cursor,
+      edgeKind: isSeed ? null : crumb.edgeKind,
+      line: isSeed ? null : crumb.edgeLine,
+    });
+    cursor = isSeed ? null : crumb.parent;
+  }
+  reverse.reverse();
+  return reverse.map((step) => {
+    const meta = symMeta.get(step.id) as SymbolMeta | undefined;
+    return {
+      name: meta?.name ?? "?",
+      file: meta?.file ?? null,
+      line: step.line ?? meta?.startLine ?? null,
+      edgeKind: step.edgeKind,
+    };
+  });
 }

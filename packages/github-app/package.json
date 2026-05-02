@@ -1,6 +1,6 @@
 {
   "name": "code-graph-rca-github-app",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "GitHub PR-review for code-graph-rca — works as a GitHub App (hosted webhook) OR as a GitHub Action (no hosting). Posts ranked causal candidates + blast-radius comments on every PR.",
   "type": "module",
   "license": "MIT",

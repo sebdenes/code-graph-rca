@@ -93,6 +93,43 @@ describe("runRca", () => {
     expect(anchor!.recentChanges.length).toBeGreaterThan(0);
   });
 
+  it("format: 'structured' suppresses prompt rendering but keeps every other field identical", async () => {
+    const req = {
+      failureScope: { kind: "symbol" as const, name: "ingest" },
+      repoRoot: PY_FIXTURE,
+    };
+    const promptResult = await runRca(req);
+    const structuredResult = await runRca({ ...req, format: "structured" });
+
+    expect(promptResult.prompt.length).toBeGreaterThan(0);
+    expect(structuredResult.prompt).toBe("");
+    // Everything else — graphContext, candidates, hypothesis, queries — must match.
+    expect(structuredResult.graphContext).toBe(promptResult.graphContext);
+    expect(structuredResult.firstHypothesis).toBe(promptResult.firstHypothesis);
+    expect(structuredResult.primarySymbol).toBe(promptResult.primarySymbol);
+    expect(structuredResult.scope).toEqual(promptResult.scope);
+    expect(structuredResult.causalCandidates).toEqual(promptResult.causalCandidates);
+    expect(structuredResult.queries.map((q) => q.name))
+      .toEqual(promptResult.queries.map((q) => q.name));
+  });
+
+  it("format: 'prompt' (default) emits the same prompt as formatRcaPrompt over structured fields", async () => {
+    const { formatRcaPrompt } = await import("../../src/rca/prompt.js");
+    const result = await runRca({
+      failureScope: { kind: "symbol", name: "ingest" },
+      repoRoot: PY_FIXTURE,
+    });
+    const reformatted = formatRcaPrompt({
+      failure: { kind: "symbol", name: "ingest" },
+      scope: result.scope,
+      causalCandidates: result.causalCandidates,
+      firstHypothesis: result.firstHypothesis,
+      queries: result.queries,
+      primarySymbol: result.primarySymbol,
+    });
+    expect(reformatted).toBe(result.prompt);
+  });
+
   it("empty repo / nonexistent file returns empty queries with note", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "rca-empty-"));
     const result = await runRca({

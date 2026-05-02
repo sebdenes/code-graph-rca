@@ -62,6 +62,36 @@
     (attribute
       attribute: (identifier) @extends.target)))
 
+; ---------------- Locals ----------------
+; Capture every assignment — no anchor. The extractor walks ancestors to find
+; the nearest enclosing function_definition; if none exists (module-level)
+; the assignment is dropped. tuple_pattern / list_pattern targets are
+; expanded by the extractor: it walks into the `left` field and emits one
+; local per identifier. Annotated forms (`x: int = 1`) parse as `assignment`
+; with a `type` field alongside `left` + `right`; the same capture handles
+; both. Comprehension targets live inside (list_comprehension|dict_comprehension|
+; set_comprehension|generator_expression) — those don't contain `assignment`
+; so they're naturally excluded.
+
+(assignment) @symbol.localdecl
+
+; Loop iteration variables (`for k, v in d.items():`). The extractor reads
+; the `left` field and emits one local per identifier (handling tuple
+; unpacking the same way as assignment).
+
+(for_statement) @symbol.loopvar
+
+; `as`-pattern target: `except E as exc:` and `with open(...) as f:` both
+; surface as an `as_pattern` whose second child is an `as_pattern_target`
+; wrapping the bound identifier. Capture the whole `as_pattern` so the
+; extractor can pull the bound name AND, when the LHS is a class identifier
+; (the typical `except SomeError as e` shape), use that class name as
+; type_text — feeding receiver-type inference. With-clauses wrap a `call`
+; (or other expression) on the LHS; type_text stays NULL for those because
+; inferring `open()`'s return type is out of scope here.
+
+(as_pattern) @symbol.aspattern
+
 ; ---------------- Calls ----------------
 
 ; Direct identifier call: foo(...)
@@ -82,6 +112,15 @@
     object: (attribute
       attribute: (identifier) @call.object)
     attribute: (identifier) @call.callee))
+
+; ---------------- Params ----------------
+; Python function/method formal parameters. The extractor walks children to
+; enumerate (name, type_text, has_default) per slot. Receiver-type inference
+; (resolve.ts) leans on captured type_text — `def f(self, db: Conn): db.exec(...)`
+; resolves `db.exec` to the `exec` method on `Conn` when `Conn` is in scope.
+
+(function_definition
+  parameters: (parameters) @symbol.params)
 
 ; ---------------- Imports ----------------
 

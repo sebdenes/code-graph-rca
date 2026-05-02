@@ -79,6 +79,29 @@ export function loadQuery(name: "typescript" | "python"): string {
   return src;
 }
 
+/**
+ * Compile-once cache for tree-sitter Query objects, keyed by grammar identity.
+ * Compiling a query is expensive (~6ms per file at scale) and the result is
+ * pure with respect to the grammar+source pair, so we cache aggressively.
+ *
+ * Keyed by Parser.Language object identity via WeakMap so reloaded grammars
+ * (which produce a new Language instance) get a fresh compiled query.
+ * Cached queries are NEVER deleted — callers must not call .delete() on them.
+ */
+const compiledQueryCache = new WeakMap<Parser.Language, Parser.Query>();
+
+export function getCompiledQuery(
+  grammar: Parser.Language,
+  queryName: "typescript" | "python",
+): Parser.Query {
+  const cached = compiledQueryCache.get(grammar);
+  if (cached) return cached;
+  const src = loadQuery(queryName);
+  const q = grammar.query(src);
+  compiledQueryCache.set(grammar, q);
+  return q;
+}
+
 export function newParser(language: Parser.Language): Parser {
   const p = new Parser();
   p.setLanguage(language);

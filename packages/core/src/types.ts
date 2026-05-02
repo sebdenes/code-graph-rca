@@ -7,7 +7,20 @@ export type SymbolKind =
   | "interface"
   | "const"
   | "enum"
-  | "type";
+  | "type"
+  // Synthetic kind: a formal parameter promoted to a first-class symbol so
+  // arg_bindings.source_symbol_id (FK → symbols.id) can target it. Inserted
+  // by insertExtracted's params post-pass; lives at the enclosing function's
+  // start_line/end_line, with parent_id pointing at that function.
+  | "param"
+  // Top-level local variable (const/let/var in TS, top-level assignment in
+  // Python) declared inside a function/method body. Extracted only at depth
+  // 1 of the body — nested scopes, destructuring patterns, comprehension
+  // targets, and loop iterators are intentionally skipped. parent_id points
+  // at the enclosing function symbol so resolveArgBindingSources can find
+  // it when an identifier arg names a local. Same role as `param`: gives
+  // arg_bindings.source_symbol_id a concrete row to FK at.
+  | "local";
 
 export type EdgeKind = "CALLS" | "IMPORTS" | "EXTENDS" | "IMPLEMENTS";
 
@@ -31,7 +44,15 @@ export interface SymbolRow {
   end_line: number;
   signature: string | null;
   exported: 0 | 1;
+  /** v6: raw type annotation on params/locals; NULL elsewhere. */
+  type_text: string | null;
 }
+
+export type ResolutionKind =
+  | "stdlib"
+  | "external_module"
+  | "instance_method"
+  | "unknown";
 
 export interface EdgeRow {
   id: number;
@@ -41,6 +62,7 @@ export interface EdgeRow {
   kind: EdgeKind;
   confidence: number;
   call_line: number | null;
+  resolution_kind: ResolutionKind | null;
 }
 
 export interface ImportRow {
@@ -60,6 +82,14 @@ export interface ExtractedSymbol {
   endLine: number;
   signature: string | null;
   exported: boolean;
+  /**
+   * Raw type-annotation source text for `kind='local'` rows (and, when
+   * available, `kind='param'` rows derived from this symbol). Populated
+   * for Python annotated assignments (`x: SomeClass = ...`) and for-loop
+   * type comments where surfaced. NULL when no annotation is present.
+   * Powers receiver-type inference in resolve.ts.
+   */
+  typeText?: string | null;
 }
 
 export interface ExtractedEdge {
@@ -70,6 +100,50 @@ export interface ExtractedEdge {
   kind: EdgeKind;
   confidence: number;
   callLine: number | null;
+  /**
+   * Per-argument bindings at a CALLS edge's call site. Empty for non-call
+   * edges (EXTENDS / IMPLEMENTS / IMPORTS). Carried side-by-side with the
+   * edge so `insertExtracted` can persist them after the edge row exists.
+   */
+  argBindings?: ExtractedArgBinding[];
+}
+
+/** What kind of expression appears in argument position at a call site. */
+export type ArgSourceKind =
+  | "identifier"
+  | "literal"
+  | "member"
+  | "call"
+  | "spread"
+  | "other";
+
+export interface ExtractedArgBinding {
+  position: number;
+  sourceKind: ArgSourceKind;
+  sourceText: string;
+}
+
+export interface ExtractedParam {
+  /** 0-based position. */
+  position: number;
+  name: string;
+  /** Raw type annotation source text, or null when absent. */
+  typeText: string | null;
+  hasDefault: boolean;
+}
+
+/**
+ * A formal-parameter row keyed back to its enclosing symbol via the same
+ * (kind, parentName, name) tuple `insertExtracted` uses for edges. Carried on
+ * `ExtractedSymbol`-side rather than `ExtractedFile` to keep the symbol/param
+ * association explicit through the pipeline.
+ */
+export interface ExtractedSymbolParams {
+  ownerKind: SymbolKind;
+  ownerName: string;
+  /** Enclosing class name when the owner is a method, else null. */
+  ownerParentName: string | null;
+  params: ExtractedParam[];
 }
 
 export interface ExtractedImport {
@@ -86,6 +160,27 @@ export interface ExtractedFile {
   symbols: ExtractedSymbol[];
   edges: ExtractedEdge[];
   imports: ExtractedImport[];
+  /**
+   * Formal-parameter rows. One entry per function/method symbol that has
+   * any parameters (or even zero — we still record the empty list to
+   * disambiguate from "not extracted yet"). Populated for TypeScript only.
+   */
+  symbolParams?: ExtractedSymbolParams[];
+}
+
+/**
+ * Edge kind in the `pathBetween` traversal: a regular CALLS edge from the
+ * graph, or an ARG_BIND edge that follows a value flowing from a producer
+ * symbol into the parameter of a callee via an argument expression.
+ */
+export type PathEdgeKind = "CALLS" | "ARG_BIND";
+
+export interface PathStep {
+  name: string;
+  file: string | null;
+  line: number | null;
+  /** How this step was reached from the previous one. `null` on the seed. */
+  edgeKind: PathEdgeKind | null;
 }
 
 export interface Definition {
@@ -129,6 +224,12 @@ export interface CalleeNode {
   file: string | null;
   line: number | null;
   confidence: number;
+  /**
+   * For unresolved callees, why we couldn't resolve them. Null for resolved
+   * edges. Lets downstream scoring/LLM stages distinguish stdlib noise from
+   * truly missing symbols.
+   */
+  resolutionKind?: ResolutionKind | null;
   /** Populated when caller/callee queries are run with hydrateRecency. */
   recentChanges?: RecentChange[];
   callees: CalleeNode[];
@@ -166,6 +267,11 @@ export interface CausalCandidate {
     ambiguityScore: number;
     coChangeScore: number;
     subsystemScore: number;
+    complexityScore: number;
+    /** Shortest pathBetween distance from this candidate to the anchor over
+     *  CALLS + arg-binding flow edges, decayed: 1 hop=1.5, 2=1.1, 3=0.7,
+     *  4=0.3, no path within depth=4 → 0. */
+    dataflowScore: number;
   };
   /** Human-readable rationale, one sentence. */
   rationale: string;

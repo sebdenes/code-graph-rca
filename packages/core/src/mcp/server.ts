@@ -29,6 +29,36 @@ import {
 import { runRca } from "../rca/runner.js";
 import { resolveScope } from "../graph/scope.js";
 import { tryConnectBridge, type BridgeClient } from "./bridge.js";
+import { isDaemonUp, callDaemon } from "../daemon/client.js";
+
+/**
+ * If the daemon is up AND has this repo already indexed, call it via JSON-RPC.
+ * Returns null otherwise — the caller falls through to the in-process path.
+ * Never spawns the daemon and never asks it to index. The user controls daemon
+ * lifecycle via `cgrca daemon start`.
+ */
+async function tryDaemon<R = unknown>(
+  method: string,
+  repoRoot: string,
+  params: Record<string, unknown>,
+): Promise<R | null> {
+  try {
+    if (!(await isDaemonUp())) return null;
+    const status = await callDaemon<{ repos?: string[] }>(
+      "status",
+      {},
+      { timeoutMs: 800 },
+    );
+    if (!status.repos?.includes(repoRoot)) return null;
+    return await callDaemon<R>(method, { repoRoot, ...params }, { timeoutMs: 5000 });
+  } catch {
+    return null;
+  }
+}
+
+function logVia(tool: string, via: "daemon" | "in-process"): void {
+  process.stderr.write(`cgrca mcp: tool=${tool} via=${via}\n`);
+}
 
 interface ServerOptions {
   /** Repo root the agent will be querying against. */
@@ -41,27 +71,108 @@ interface IndexedHandle {
   db: Database;
   symbolCount: number;
   edgeCount: number;
+  mtime: number;
 }
 
-let _cached: { repoRoot: string; handle: IndexedHandle } | null = null;
+/**
+ * Per-repoRoot in-flight cache.
+ *
+ * The previous singleton (`_cached`) had two races:
+ *   1. Two concurrent tool calls for the same repo would each invoke
+ *      `indexScope`, double the work, and the second `db.close()` would
+ *      yank the handle out from under the first request mid-flight ("Db
+ *      is closed" / silent corruption).
+ *   2. A second repo's request would synchronously close the first repo's
+ *      DB even if its callers were still mid-query.
+ *
+ * Fix: cache `Promise<IndexedHandle>` keyed by repoRoot. Concurrent
+ * callers for the same repo await the same promise (indexScope runs
+ * once). Different repos get independent entries; old entries for *other*
+ * repos are evicted lazily and only closed *after* their promise settles,
+ * so in-flight queries on the old handle keep working.
+ */
+const _indexCache = new Map<string, Promise<IndexedHandle>>();
 
-async function ensureIndex(repoRoot: string): Promise<IndexedHandle> {
-  if (_cached && _cached.repoRoot === repoRoot) return _cached.handle;
-  if (_cached) {
+/** Stale entries past this age are re-indexed on next request. */
+const TTL_MS = 5 * 60 * 1000;
+
+/** @internal — test-only. Drops the cache and best-effort closes settled DBs. */
+export async function _resetCache(): Promise<void> {
+  const entries = Array.from(_indexCache.values());
+  _indexCache.clear();
+  for (const p of entries) {
     try {
-      _cached.handle.db.close();
+      const h = await p;
+      try {
+        h.db.close();
+      } catch {
+        // best-effort
+      }
     } catch {
-      // best-effort
+      // settled-with-error: nothing to close
     }
   }
-  const result = await indexScope({ repoRoot });
-  const handle: IndexedHandle = {
-    db: result.db,
-    symbolCount: result.symbolCount,
-    edgeCount: result.edgeCount,
-  };
-  _cached = { repoRoot, handle };
-  return handle;
+}
+
+/** @internal — exported for tests. Public callers should not import this. */
+export async function _ensureIndex(repoRoot: string): Promise<IndexedHandle> {
+  return ensureIndex(repoRoot);
+}
+
+async function ensureIndex(repoRoot: string): Promise<IndexedHandle> {
+  const existing = _indexCache.get(repoRoot);
+  if (existing) {
+    try {
+      const h = await existing;
+      if (Date.now() - h.mtime < TTL_MS) return h;
+      // Stale — evict and fall through to re-index. Close the old DB
+      // *after* we've removed it from the map so no new caller adopts it.
+      _indexCache.delete(repoRoot);
+      try {
+        h.db.close();
+      } catch {
+        // best-effort
+      }
+    } catch {
+      // Previous attempt failed; drop it and retry.
+      _indexCache.delete(repoRoot);
+    }
+  }
+
+  // Evict entries for *other* repoRoots, but defer their close() until
+  // after their promise settles so any in-flight query completes safely.
+  for (const [key, pending] of _indexCache) {
+    if (key === repoRoot) continue;
+    _indexCache.delete(key);
+    void pending.then(
+      (h) => {
+        try {
+          h.db.close();
+        } catch {
+          // best-effort
+        }
+      },
+      () => {
+        /* errored — nothing to close */
+      },
+    );
+  }
+
+  const promise = (async (): Promise<IndexedHandle> => {
+    const result = await indexScope({ repoRoot });
+    return {
+      db: result.db,
+      symbolCount: result.symbolCount,
+      edgeCount: result.edgeCount,
+      mtime: Date.now(),
+    };
+  })();
+  _indexCache.set(repoRoot, promise);
+  // If indexing fails, drop the failed promise so the next call retries.
+  promise.catch(() => {
+    if (_indexCache.get(repoRoot) === promise) _indexCache.delete(repoRoot);
+  });
+  return promise;
 }
 
 function asJson(value: unknown): { content: Array<{ type: "text"; text: string }> } {
@@ -105,6 +216,19 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ name, language, subsystem }) => {
+      const params: Record<string, unknown> = { name };
+      if (language) params.language = language;
+      if (subsystem) params.subsystem = subsystem;
+      const viaDaemon = await tryDaemon<ReturnType<typeof definitionOf>>(
+        "define", opts.repoRoot, params,
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_definitionOf", "daemon");
+        const first = viaDaemon[0];
+        if (first) await publishFocus(first.name, first.file, first.startLine);
+        return asJson(viaDaemon);
+      }
+      logVia("cgrca_definitionOf", "in-process");
       const { db } = await ensureIndex(opts.repoRoot);
       const queryOpts: { language?: "typescript" | "python"; subsystem?: string } = {};
       if (language) queryOpts.language = language;
@@ -129,6 +253,17 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ name, depth, minConfidence }) => {
+      const params: Record<string, unknown> = { name };
+      if (typeof depth === "number") params.depth = depth;
+      if (typeof minConfidence === "number") params.minConfidence = minConfidence;
+      const viaDaemon = await tryDaemon<ReturnType<typeof callersOf>>(
+        "callers", opts.repoRoot, params,
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_callersOf", "daemon");
+        return asJson(viaDaemon);
+      }
+      logVia("cgrca_callersOf", "in-process");
       const { db } = await ensureIndex(opts.repoRoot);
       const queryOpts: { depth?: number; minConfidence?: number } = {};
       if (typeof depth === "number") queryOpts.depth = depth;
@@ -153,6 +288,16 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ name, depth }) => {
+      const params: Record<string, unknown> = { name };
+      if (typeof depth === "number") params.depth = depth;
+      const viaDaemon = await tryDaemon<ReturnType<typeof calleesOf>>(
+        "callees", opts.repoRoot, params,
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_calleesOf", "daemon");
+        return asJson(viaDaemon);
+      }
+      logVia("cgrca_calleesOf", "in-process");
       const { db } = await ensureIndex(opts.repoRoot);
       const queryOpts: { depth?: number } = {};
       if (typeof depth === "number") queryOpts.depth = depth;
@@ -191,6 +336,17 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ name, sinceDays, maxCommits }) => {
+      const params: Record<string, unknown> = { name };
+      if (typeof sinceDays === "number") params.sinceDays = sinceDays;
+      if (typeof maxCommits === "number") params.maxCommits = maxCommits;
+      const viaDaemon = await tryDaemon<ReturnType<typeof recentlyChangedNear>>(
+        "changed", opts.repoRoot, params,
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_recentlyChangedNear", "daemon");
+        return asJson(viaDaemon);
+      }
+      logVia("cgrca_recentlyChangedNear", "in-process");
       const { db } = await ensureIndex(opts.repoRoot);
       const queryOpts: { repoRoot: string; sinceDays?: number; maxCommits?: number } = {
         repoRoot: opts.repoRoot,
@@ -231,6 +387,18 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       if (typeof args.maxFiles === "number") budget.maxFiles = args.maxFiles;
       if (typeof args.maxLoc === "number") budget.maxLoc = args.maxLoc;
       if (typeof args.maxDepth === "number") budget.maxDepth = args.maxDepth;
+      const rpcParams: Record<string, unknown> = { failure };
+      if (Object.keys(budget).length > 0) rpcParams.budget = budget;
+      const viaDaemon = await tryDaemon<Awaited<ReturnType<typeof runRca>>>(
+        "rca", opts.repoRoot, rpcParams,
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_rca", "daemon");
+        const { prompt: _prompt, ...rest } = viaDaemon;
+        void _prompt;
+        return asJson(rest);
+      }
+      logVia("cgrca_rca", "in-process");
       const result = await runRca({
         failureScope: failure,
         repoRoot: opts.repoRoot,
@@ -261,6 +429,14 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
     },
     async (args) => {
       const failure = buildFailureScope(args);
+      const viaDaemon = await tryDaemon<Awaited<ReturnType<typeof runRca>>>(
+        "rca", opts.repoRoot, { failure },
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_rcaPrompt", "daemon");
+        return { content: [{ type: "text" as const, text: viaDaemon.prompt }] };
+      }
+      logVia("cgrca_rcaPrompt", "in-process");
       const result = await runRca({ failureScope: failure, repoRoot: opts.repoRoot });
       return { content: [{ type: "text" as const, text: result.prompt }] };
     },

@@ -1,4 +1,5 @@
 import type { Db } from "../graph/db.js";
+import { pathBetween } from "../graph/queries.js";
 import type {
   CallerNode,
   CallerTree,
@@ -16,7 +17,20 @@ import { isStdlibName } from "./stdlib-names.js";
  * `CausalCandidate`s — the LLM's "where the bug most likely is" cheat sheet.
  *
  * Scoring is deterministic. See the rubric below; weights are inlined and commented.
- */
+ *
+ * --- weight calibration -------------------------------------------------
+ * The per-signal multipliers below were fit from 101 labelled
+ * (failure -> known fix location) pairs mined from sebdenes/code-graph-rca
+ * and sebdenes/athlai. The fit code lives at
+ *   tools/calibration/fit.mjs
+ * and the corpus (gitignored, regenerate via collect.mjs) at
+ *   tools/calibration/corpus.jsonl
+ *
+ * Eval date: 2026-05-02 (v2 — refit including dataflowScore as a 7th
+ * feature; v1 was 2026-05-02 morning, six features only). Pass
+ * `useLegacyWeights: true` to recover the pre-calibration hand-set bucket
+ * constants for an A/B comparison.
+ * --------------------------------------------------------------------- */
 
 export interface CausalChainOptions {
   /** Window for "recent" — anything older contributes 0 to recencyScore. Default 90. */
@@ -25,6 +39,9 @@ export interface CausalChainOptions {
   topN?: number;
   /** Optional callee tree (for ambiguity detection — unresolved outgoing edges score). */
   calleeTreeSource?: CalleeTree;
+  /** Use the pre-calibration hand-set bucket constants instead of the learned
+   *  per-signal multipliers. Default false. */
+  useLegacyWeights?: boolean;
 }
 
 export interface CausalChainInput {
@@ -59,11 +76,12 @@ interface RawCandidate {
   subsystem: string | null;
 }
 
+// Bucket shapes (kept for explainability — same buckets as v0.x).
 const RECENCY_BUCKET_7 = 3;
 const RECENCY_BUCKET_30 = 2;
 const RECENCY_BUCKET_90 = 1;
 
-const PROXIMITY_ANCHOR = 1.5;
+const PROXIMITY_ANCHOR = 2.5;
 const PROXIMITY_DIRECT = 1;
 const PROXIMITY_TWO_HOP = 0.5;
 
@@ -76,8 +94,97 @@ const COCHANGE_CAP = 3;
 
 const SUBSYSTEM_MATCH = 0.5;
 
+const COMPLEXITY_MAX = 1.5;
+
+// Data-flow signal — week-7 redesign. pathBetween over CALLS + arg-binding
+// edges, but credit is gated on *path quality*: only hops via ARG_BIND edges
+// count. A pure-CALLS path earns zero (because that information is already
+// captured by proximityScore — anchor distance — and double-counting it is
+// what made dataflowScore noise at the per-candidate level in weeks 5/6,
+// per-candidate r ≈ -0.06). Each ARG_BIND hop adds DATAFLOW_PER_ARG_HOP,
+// capped at DATAFLOW_MAX. So a single arg-binding hop = 0.75; two = 1.5
+// (cap). Same overall magnitude budget as before so the calibrated weight
+// can stay comparable across re-fits.
+const DATAFLOW_MAX = 1.5;
+const DATAFLOW_PER_ARG_HOP = 0.75;
+const DATAFLOW_MAX_HOPS = 4;
+
 const DEFAULT_RECENCY_DAYS = 90;
 const DEFAULT_TOP_N = 5;
+
+// Per-signal multipliers learned from the calibration corpus
+// (tools/calibration/fit.mjs, eval 2026-05-02 v2 — 7-feature refit).
+// Each is applied to the bucket-derived raw signal score before summation.
+//
+// Fit on 101 unanchored entries (cgrca_input_caller / cgrca_input_trace,
+// i.e. the realistic case where the failure-input doesn't already name
+// the fix symbol). 80/20 train/holdout, seed=42, 2000 iters of batch
+// gradient descent on a logistic regression with binary "is gold candidate"
+// as the label, anchor candidates filtered out (since the anchor is never
+// the gold by construction). Negative raw weights are clipped to 0 so
+// every signal can only *help* a candidate's score (preserves the
+// rationale text's "dominant signal" semantics).
+//
+// Holdout (n=21, 2026-05-02 v3 fit): top-1 0.333 -> 0.429 (clipped),
+// top-5 0.905 -> 0.810, MRR 0.574 -> 0.585 vs the legacy hand-set weights.
+// The big jump from v2's holdout (top-1 0.20) is mostly because the corpus
+// itself is richer now: weeks-5/6 local-variable extraction grew the
+// arg_bindings.source_symbol_id resolution rate from 22.8% to 81.66%
+// (cgrca) / 77.6% (athlai), so pathBetween + ambiguity counts have more
+// signal to work with.
+//
+// Note on dataflowScore (week 7): the v2/v3 fit gave raw weight -0.80
+// (clipped to 0) because dataflowScore on a CALLS+ARG_BIND union was
+// noise — pure-CALLS paths re-counted what proximity already captured,
+// so gold and bystanders both lit up. Week-7 redesign gates the score
+// on path quality: only ARG_BIND hops earn credit (see DATAFLOW_PER_ARG_HOP
+// + the gate in computeDataflowScore).
+//
+// Re-running tools/calibration/score.mjs after the gate (2026-05-02 v4):
+// dataflowScore is now zero across all 2650 candidate rows in the
+// corpus — pathBetween rarely traverses a real arg-binding edge for
+// the candidate→anchor pairs the calibration mines. Per-candidate
+// Pearson is therefore undefined (n/a), not -0.06: there's no noise
+// any more, but there's no signal either.
+//
+// What needs to change before the gate pays off: either (a) widen the
+// corpus to include incidents where the gold *is* a value-provenance
+// symbol, or (b) extend pathBetween's arg-binding traversal to also
+// follow chained assignments / re-exports, so a producer two hops
+// away through a wrapper still lights up. Until one of those lands,
+// the calibrated weight stays at 0 and the legacy A/B path keeps 1.0
+// so the new gating is exercised end-to-end (rationale text + tests).
+const W_RECENCY = 0.0766;
+const W_PROXIMITY = 0.0; // raw fit -1.39, clipped — proximity is nearly
+                          // constant within a non-anchor candidate set, so
+                          // it carries no discriminative signal here.
+const W_AMBIGUITY = 0.2133;
+const W_COCHANGE = 0.4744;
+const W_SUBSYSTEM = 0.8909;
+const W_COMPLEXITY = 0.1679;
+const W_DATAFLOW = 0.0; // raw fit -0.80, clipped — see note above.
+
+// Legacy (pre-calibration) multipliers — all 1.0, i.e. raw bucket scores.
+// Data-flow stays at 1.0 here so the legacy A/B path keeps the new signal
+// fully active (the legacy track is the "everything counts equally" floor).
+const LEGACY_W = {
+  recency: 1.0,
+  proximity: 1.0,
+  ambiguity: 1.0,
+  coChange: 1.0,
+  subsystem: 1.0,
+  complexity: 1.0,
+  dataflow: 1.0,
+};
+const CALIBRATED_W = {
+  recency: W_RECENCY,
+  proximity: W_PROXIMITY,
+  ambiguity: W_AMBIGUITY,
+  coChange: W_COCHANGE,
+  subsystem: W_SUBSYSTEM,
+  complexity: W_COMPLEXITY,
+  dataflow: W_DATAFLOW,
+};
 
 export function buildCausalChain(
   input: CausalChainInput,
@@ -85,6 +192,7 @@ export function buildCausalChain(
 ): CausalCandidate[] {
   const recencyDays = opts.recencyDays ?? DEFAULT_RECENCY_DAYS;
   const topN = opts.topN ?? DEFAULT_TOP_N;
+  const W = opts.useLegacyWeights ? LEGACY_W : CALIBRATED_W;
 
   // 1. Collect candidates: anchor + callers (depth<=2) + callees (depth<=2), deduped.
   const candidates = collectCandidates(input);
@@ -131,12 +239,33 @@ export function buildCausalChain(
         ? SUBSYSTEM_MATCH
         : 0;
 
+    const loc = locByKey.get(c.key) ?? 0;
+    const complexityScore =
+      loc && loc > 0
+        ? Math.min(Math.log2(loc / 20 + 1) * 0.6, COMPLEXITY_MAX)
+        : 0;
+
+    // Data-flow distance: shortest pathBetween hop-count from this candidate
+    // back to the anchor over CALLS + arg-binding flow edges. The anchor
+    // itself trivially has dist=1 (single-step seed path); we map that to 0
+    // so the anchor doesn't get a free 1.5 boost from the new signal — the
+    // anchor already gets PROXIMITY_ANCHOR.
+    const dataflowScore = c.role === "anchor"
+      ? 0
+      : computeDataflowScore(input.db, c.name, input.anchor.name);
+
+    // Calibrated weighted sum (per-signal multipliers from logistic
+    // regression fit; see weight block at top of file). Data-flow's
+    // calibrated weight is 0 pending a week-7 re-fit on the new
+    // arg-binding-gated signal; legacy track keeps 1.0.
     const score =
-      recencyScore +
-      proximityScore +
-      ambiguityScore +
-      coChangeScore +
-      subsystemScore;
+      W.recency * recencyScore +
+      W.proximity * proximityScore +
+      W.ambiguity * ambiguityScore +
+      W.coChange * coChangeScore +
+      W.subsystem * subsystemScore +
+      W.complexity * complexityScore +
+      W.dataflow * dataflowScore;
 
     const signals = {
       recencyScore,
@@ -144,6 +273,8 @@ export function buildCausalChain(
       ambiguityScore,
       coChangeScore,
       subsystemScore,
+      complexityScore,
+      dataflowScore,
     };
 
     const rationale = buildRationale(c, signals, unresolved);
@@ -298,13 +429,50 @@ function computeAmbiguityScore(unresolvedCount: number): number {
   return AMBIGUITY_4_PLUS;
 }
 
+/**
+ * Compute the data-flow score for `name` against `anchorName` using
+ * pathBetween over CALLS + arg-binding edges, then **gate on path quality**:
+ * only ARG_BIND hops earn credit. A pure-CALLS path earns 0 because anchor
+ * distance is already captured by proximityScore — re-counting it here was
+ * what reduced this signal to noise at the per-candidate level in weeks 5/6.
+ *
+ * Score = min(argBindHops * DATAFLOW_PER_ARG_HOP, DATAFLOW_MAX).
+ *
+ * Wrapped in try/catch because pathBetween hits sqlite — a corrupt or
+ * concurrently-modified Db should never sink the whole scorer.
+ */
+function computeDataflowScore(
+  db: Db,
+  name: string,
+  anchorName: string,
+): number {
+  if (name === anchorName) return 0;
+  let path: Awaited<ReturnType<typeof pathBetween>> = null;
+  try {
+    path = pathBetween(db, name, anchorName, { maxDepth: DATAFLOW_MAX_HOPS });
+  } catch {
+    return 0;
+  }
+  if (!path || path.length < 2) return 0;
+  // path[0] is the seed (edgeKind=null); subsequent steps record the edge
+  // taken to reach them. Count only the ARG_BIND hops.
+  let argBindHops = 0;
+  for (let i = 1; i < path.length; i++) {
+    if (path[i]!.edgeKind === "ARG_BIND") argBindHops++;
+  }
+  if (argBindHops === 0) return 0;
+  return Math.min(argBindHops * DATAFLOW_PER_ARG_HOP, DATAFLOW_MAX);
+}
+
 function computeCoChange(
   candidates: RawCandidate[],
   recencyDays: number,
 ): Map<string, number> {
   // Group candidates by sha (within recencyDays). A sha shared by >=2 candidates → cluster.
   const shaToKeys = new Map<string, Set<string>>();
+  const candidatesByKey = new Map<string, RawCandidate>();
   for (const c of candidates) {
+    candidatesByKey.set(c.key, c);
     for (const ch of c.recentChanges) {
       if (ch.daysAgo > recencyDays) continue;
       let set = shaToKeys.get(ch.commit);
@@ -319,9 +487,19 @@ function computeCoChange(
   const bonus = new Map<string, number>();
   for (const [, keys] of shaToKeys) {
     if (keys.size < 2) continue;
+    // Gate: only cluster if anchor is one of the keys OR cluster size >= 3.
+    const hasAnchor = [...keys].some(
+      (k) => candidatesByKey.get(k)?.role === "anchor",
+    );
+    if (!hasAnchor && keys.size < 3) continue;
+    // Demote co-change in megacommits: a sha touching N candidates contributes
+    // COCHANGE_PER_CLUSTER / log2(N+1) per candidate, not the full per-cluster
+    // amount. A 2-candidate cluster still gets ~+1.26; a 12-candidate megacommit
+    // contributes ~+0.55 each.
+    const perCluster = COCHANGE_PER_CLUSTER / Math.log2(keys.size + 1);
     for (const key of keys) {
       const existing = bonus.get(key) ?? 0;
-      const next = Math.min(existing + COCHANGE_PER_CLUSTER, COCHANGE_CAP);
+      const next = Math.min(existing + perCluster, COCHANGE_CAP);
       bonus.set(key, next);
     }
   }
@@ -347,11 +525,17 @@ function buildRationale(
     ambiguityScore: number;
     coChangeScore: number;
     subsystemScore: number;
+    complexityScore: number;
+    dataflowScore: number;
   },
   unresolved: string[],
 ): string {
-  // Pick the dominant signal (highest contribution; ties broken by a fixed order).
+  // Pick the dominant signal (highest contribution; ties broken by a fixed
+  // order). Data-flow is checked before co-change because a direct data-flow
+  // hop is more concrete causal evidence ("X reaches the anchor in 2 frames")
+  // than a shared sha.
   const entries: Array<[string, number]> = [
+    ["dataflow", signals.dataflowScore],
     ["coChange", signals.coChangeScore],
     ["recency", signals.recencyScore],
     ["ambiguity", signals.ambiguityScore],
@@ -369,6 +553,16 @@ function buildRationale(
 
   const newest = c.recentChanges[0];
 
+  if (dominantKey === "dataflow" && signals.dataflowScore > 0) {
+    // Invert the per-arg-hop multiplier to recover the arg-binding hop
+    // count for the prose (clipped at the cap). Round to defend against
+    // float noise.
+    const hops = Math.max(
+      1,
+      Math.round(signals.dataflowScore / DATAFLOW_PER_ARG_HOP),
+    );
+    return `${c.name} reaches the anchor via ${hops} arg-binding hop${hops === 1 ? "" : "s"} — the value that surfaces at the failure originates here.`;
+  }
   if (dominantKey === "coChange" && signals.coChangeScore > 0 && newest) {
     return `Co-changed with the anchor in commit ${shortSha(newest.commit)} — the change set that introduced the failure neighborhood.`;
   }

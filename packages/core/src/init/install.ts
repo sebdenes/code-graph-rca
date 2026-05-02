@@ -51,6 +51,89 @@ export interface InitResult {
   notes: string[];
 }
 
+/**
+ * One row in the pre-write summary. `existing` tells the user whether
+ * we'll be touching a file that already has content (the spooky case)
+ * or creating a new one.
+ */
+export interface InitPlanItem {
+  target: string;
+  path: string;
+  existing: boolean;
+  action: "update" | "create" | "skip";
+  reason?: string;
+}
+
+export interface InitPlan {
+  items: InitPlanItem[];
+  agentsMd: { path: string; action: "create" | "skip"; reason?: string };
+}
+
+/**
+ * Compute what `runInit` would do, without writing. This drives the
+ * confirmation prompt — we want the user to see exactly which files
+ * we're about to mutate before we mutate them.
+ */
+export function planInit(opts: InitOptions): InitPlan {
+  const home = opts.homeOverride ?? homedir();
+  const cliPath = resolve(opts.cliPath);
+  const repoRoot = resolve(opts.repoRoot);
+  const targets = buildTargets(home, cliPath, repoRoot);
+  const items: InitPlanItem[] = [];
+  for (const t of targets) {
+    if (!shouldWrite(t.path)) {
+      items.push({
+        target: t.name,
+        path: t.path,
+        existing: false,
+        action: "skip",
+        reason: "not detected",
+      });
+      continue;
+    }
+    const existing = existsSync(t.path);
+    items.push({
+      target: t.name,
+      path: t.path,
+      existing,
+      action: existing ? "update" : "create",
+    });
+  }
+  const agentsPath = join(repoRoot, "AGENTS.md");
+  const agentsExists = existsSync(agentsPath);
+  return {
+    items,
+    agentsMd: agentsExists
+      ? { path: agentsPath, action: "skip", reason: "already exists" }
+      : { path: agentsPath, action: "create" },
+  };
+}
+
+/**
+ * Render the plan as a human-readable summary table for the CLI prompt.
+ */
+export function formatInitPlan(plan: InitPlan, cliPath: string, repoRoot: string): string {
+  const lines: string[] = [];
+  lines.push("cgrca init — planned changes");
+  lines.push(`  repo: ${repoRoot}`);
+  lines.push(`  cli:  ${cliPath}`);
+  lines.push("");
+  lines.push("  TARGET              EXISTS?  ACTION   PATH");
+  for (const it of plan.items) {
+    const exists = it.existing ? "yes    " : "no     ";
+    const action = it.action.padEnd(7);
+    const suffix = it.reason ? `  (${it.reason})` : "";
+    lines.push(`  ${it.target.padEnd(18)}  ${exists}  ${action}  ${it.path}${suffix}`);
+  }
+  const a = plan.agentsMd;
+  const aExists = a.action === "skip" ? "yes    " : "no     ";
+  const aAction = a.action.padEnd(7);
+  const aSuffix = a.reason ? `  (${a.reason})` : "";
+  lines.push(`  ${"AGENTS.md".padEnd(18)}  ${aExists}  ${aAction}  ${a.path}${aSuffix}`);
+  lines.push("");
+  return lines.join("\n");
+}
+
 interface Target {
   name: string;
   /** Path to the JSON config we'd modify. Resolved at run time. */
