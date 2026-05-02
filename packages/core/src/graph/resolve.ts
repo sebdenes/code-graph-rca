@@ -1,7 +1,21 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
+import { createRequire } from "node:module";
+import type { Ignore } from "ignore";
 import type { Db } from "./db.js";
 import { isStdlibName } from "../rca/stdlib-names.js";
+
+const requireFromHere = createRequire(import.meta.url);
+const ignoreLib = requireFromHere("ignore") as (options?: { ignorecase?: boolean }) => Ignore;
+
+function loadGitignoreForResolve(repoRoot: string): Ignore {
+  const ig = ignoreLib();
+  const gi = join(repoRoot, ".gitignore");
+  if (existsSync(gi)) {
+    try { ig.add(readFileSync(gi, "utf8")); } catch { /* best-effort */ }
+  }
+  return ig;
+}
 
 interface FileRow {
   id: number;
@@ -823,6 +837,7 @@ function tryTsResolve(candidate: string, fileIdByPath: Map<string, number>): num
 
 function scanWorkspacePackages(repoRoot: string): Map<string, string> {
   const result = new Map<string, string>();
+  const ig = loadGitignoreForResolve(repoRoot);
   // Walk up to 4 levels deep looking for package.json with "name".
   function visit(absDir: string, relDir: string, depth: number): void {
     if (depth > 4) return;
@@ -836,6 +851,9 @@ function scanWorkspacePackages(repoRoot: string): Map<string, string> {
       if (ent.name === "node_modules" || ent.name === ".git" || ent.name === "dist") continue;
       const abs = join(absDir, ent.name);
       const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
+      // Honor .gitignore so e.g. `.claude/worktrees/agent-X/package.json`
+      // doesn't shadow the real workspace package mapping.
+      if (ent.isDirectory() ? ig.ignores(rel + "/") : ig.ignores(rel)) continue;
       if (ent.isDirectory()) visit(abs, rel, depth + 1);
       else if (ent.isFile() && ent.name === "package.json") {
         try {
@@ -857,6 +875,7 @@ function scanPyPackageRoots(repoRoot: string): Map<string, string> {
   // Find directories that contain __init__.py — their dir name is the import
   // root, mapped to repo-relative path.
   const result = new Map<string, string>();
+  const ig = loadGitignoreForResolve(repoRoot);
   function visit(absDir: string, relDir: string, depth: number): void {
     if (depth > 6) return;
     let entries;
@@ -883,6 +902,9 @@ function scanPyPackageRoots(repoRoot: string): Map<string, string> {
       if (!ent.isDirectory()) continue;
       const abs = join(absDir, ent.name);
       const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
+      // Honor .gitignore so a stale `.claude/worktrees/agent-X/some_pkg/__init__.py`
+      // doesn't shadow the real `some_pkg` import mapping.
+      if (ig.ignores(rel + "/")) continue;
       try {
         const st = statSync(abs);
         if (st.isDirectory()) visit(abs, rel, depth + 1);

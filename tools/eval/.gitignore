@@ -1,0 +1,5 @@
+# Owned by the bug-corpus agent (data, not source).
+corpus*.jsonl
+
+# Per-run output.
+eval-results-*.json

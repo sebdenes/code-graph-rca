@@ -1,12 +1,34 @@
 import { readFileSync, readdirSync, realpathSync, statSync, existsSync } from "node:fs";
 import { join, dirname, relative, sep, posix } from "node:path";
+import { createRequire } from "node:module";
+import type { Ignore } from "ignore";
 import { languageOf } from "./walker.js";
+
+const requireFromHere = createRequire(import.meta.url);
+const ignoreLib = requireFromHere("ignore") as (options?: { ignorecase?: boolean }) => Ignore;
+
+function loadGitignore(repoRoot: string): Ignore {
+  const ig = ignoreLib();
+  const gi = join(repoRoot, ".gitignore");
+  if (existsSync(gi)) {
+    try {
+      ig.add(readFileSync(gi, "utf8"));
+    } catch {
+      // best-effort — same as walker.ts
+    }
+  }
+  return ig;
+}
 
 export type FailureScope =
   | { kind: "stack-trace"; text: string }
   | { kind: "failing-test"; path: string; testName?: string }
   | { kind: "symbol"; name: string; file?: string }
-  | { kind: "file"; path: string };
+  | { kind: "file"; path: string }
+  // v0.5 Phase 1: prose / intent / partial-trace input that didn't match any
+  // structured shape. resolveScope can't pick seeds for this — the runner
+  // does broad indexing + token matching in a separate path.
+  | { kind: "free-text"; text: string };
 
 export interface ScopeBudget {
   maxFiles?: number;
@@ -60,6 +82,11 @@ function scanRepo(repoRoot: string, fileCap?: number): {
   // Track resolved real paths to break symlink loops (`ln -s . loop`) and
   // sort entries lex so two clones produce identical traversal order.
   const seenDirs = new Set<string>();
+  // Honor .gitignore the same way walker.ts does. Without this, dot-prefix
+  // dirs like `.claude/`, `.agent/`, `.ruff_cache/` (not in IGNORE_DIRS)
+  // get walked first alphabetically and exhaust the budget on noise. Same
+  // bug as the v0.5 Phase 1 collectBroadScope drift (2026-05-02).
+  const ig = loadGitignore(repoRoot);
   const visit = (absDir: string): void => {
     if (files.length >= cap) { truncated = true; return; }
     let real: string;
@@ -72,10 +99,15 @@ function scanRepo(repoRoot: string, fileCap?: number): {
     for (const ent of entries) {
       if (files.length >= cap) { truncated = true; return; }
       const abs = join(absDir, ent.name);
+      const rel = toPosix(relative(repoRoot, abs));
+      if (rel.startsWith("..") || rel === "") continue;
       if (ent.isDirectory()) {
-        if (!IGNORE_DIRS.has(ent.name)) visit(abs);
+        if (IGNORE_DIRS.has(ent.name)) continue;
+        if (ig.ignores(rel + "/")) continue;
+        visit(abs);
+        continue;
       } else if (ent.isFile()) {
-        const rel = toPosix(relative(repoRoot, abs));
+        if (ig.ignores(rel)) continue;
         if (isParseable(rel)) files.push(rel);
         if (ent.name === "__init__.py") {
           dirsWithInit.add(toPosix(relative(repoRoot, absDir)));
@@ -304,6 +336,13 @@ export function resolveScope(
     const matches = findSymbolFiles(repoRoot, allFiles, failure.name, failure.file);
     if (matches.length === 0) notes.push(`no definition found for symbol ${failure.name}`);
     for (const m of matches) seeds.push(m);
+  } else if (failure.kind === "free-text") {
+    // Free-text can't yield seeds at the file-resolution layer. The runner
+    // path indexes the whole repo (capped by the budget) and runs textmode
+    // tokenization against the resulting DB. We still need an empty-but-
+    // well-formed ResolvedScope so the runner's "no seeds" check fires
+    // cleanly — and so primarySymbol stays null until token matches land.
+    notes.push("free-text scope: deferred to runner-side textmode dispatch");
   } else {
     const { paths, symbols } = parseStack(failure.text);
     let n = 0;
