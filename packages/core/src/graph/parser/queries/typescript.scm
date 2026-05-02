@@ -118,6 +118,69 @@
       name: (identifier) @symbol.name
       value: (function_expression))) @symbol.const) @symbol.exported
 
+; ---------------- Locals ----------------
+; Top-level (depth-1) variable declarations inside a function/method body. We
+; anchor on the enclosing function-shaped node (function_declaration,
+; function_expression, arrow_function, method_definition) so that the
+; statement_block predicate matches ONLY function bodies, never nested
+; if/while/for blocks (those have their own statement_block which is not the
+; body field of any function-shaped node). Destructuring patterns
+; (object_pattern / array_pattern names) are skipped — only an identifier
+; name field matches. Loop iteration vars live inside for_in_statement /
+; for_statement, not the function body's direct children. Arrow /
+; function-expression initializers at local scope are NOT captured here as
+; locals (no negation needed: we promote any local with a value to
+; kind='local'; the extractor stays consistent with the existing top-level
+; @symbol.const treatment for fn-as-const at module scope).
+
+(function_declaration
+  body: (statement_block
+    (lexical_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name) @symbol.local)))
+
+(function_declaration
+  body: (statement_block
+    (variable_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name) @symbol.local)))
+
+(function_expression
+  body: (statement_block
+    (lexical_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name) @symbol.local)))
+
+(function_expression
+  body: (statement_block
+    (variable_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name) @symbol.local)))
+
+(arrow_function
+  body: (statement_block
+    (lexical_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name) @symbol.local)))
+
+(arrow_function
+  body: (statement_block
+    (variable_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name) @symbol.local)))
+
+(method_definition
+  body: (statement_block
+    (lexical_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name) @symbol.local)))
+
+(method_definition
+  body: (statement_block
+    (variable_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name) @symbol.local)))
+
 ; ---------------- Calls ----------------
 
 ; Direct identifier callee: foo()

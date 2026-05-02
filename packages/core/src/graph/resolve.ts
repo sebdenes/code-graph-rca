@@ -45,6 +45,19 @@ export function resolveEdges(db: Db, repoRoot: string): void {
   const workspacePackages = scanWorkspacePackages(repoRoot);
   const pyPackageRoots = scanPyPackageRoots(repoRoot);
 
+  // 0. Backfill parent_id for kind='local' rows. The extractor emits locals
+  // with parentName set to the enclosing function's name, but the
+  // insertExtracted symbol loop only resolves parent_id for class parents
+  // (because `class:${parentName}` is the only key it tries). We patch those
+  // locals here by range-matching: for each local, find the smallest-range
+  // function/method/const symbol in the same file whose [start_line,end_line]
+  // straddles the local's start_line, and set parent_id to that symbol.
+  // resolveArgBindingSources below leans on this to scope a local to its
+  // declaring function. Same shape as the param-as-symbol promotion in
+  // insertExtracted: a synthetic kind row whose parent_id makes it findable
+  // by name within a caller's scope.
+  backfillLocalParents(db);
+
   // 1. Same-file unique-name resolution.
   const sameFile = db.prepare(`
     UPDATE edges
@@ -88,14 +101,66 @@ export function resolveEdges(db: Db, repoRoot: string): void {
 }
 
 /**
+ * For each kind='local' symbol whose parent_id is NULL (insertExtracted only
+ * sets parent_id for class parents), find the enclosing function/method/const
+ * by range and patch parent_id. Smallest containing range wins so nested
+ * arrow IIFEs prefer the inner function over the outer module function.
+ */
+function backfillLocalParents(db: Db): void {
+  const locals = db
+    .prepare(
+      "SELECT id, file_id, start_line FROM symbols WHERE kind = 'local' AND parent_id IS NULL",
+    )
+    .all() as Array<{ id: number; file_id: number; start_line: number }>;
+  if (locals.length === 0) return;
+  // Bucket candidate parents by file once. Filter to function-shaped kinds —
+  // we exclude classes/interfaces because a local belongs to the *function*
+  // that declares it, not its enclosing class. Methods are included.
+  const candidates = db
+    .prepare(
+      "SELECT id, file_id, start_line, end_line FROM symbols WHERE kind IN ('function', 'method', 'const')",
+    )
+    .all() as Array<{ id: number; file_id: number; start_line: number; end_line: number }>;
+  const byFile = new Map<number, typeof candidates>();
+  for (const c of candidates) {
+    let bucket = byFile.get(c.file_id);
+    if (!bucket) {
+      bucket = [];
+      byFile.set(c.file_id, bucket);
+    }
+    bucket.push(c);
+  }
+  const update = db.prepare("UPDATE symbols SET parent_id = ? WHERE id = ?");
+  const tx = db.transaction(() => {
+    for (const loc of locals) {
+      const bucket = byFile.get(loc.file_id);
+      if (!bucket) continue;
+      let best: { id: number; span: number } | null = null;
+      for (const c of bucket) {
+        if (c.start_line <= loc.start_line && loc.start_line <= c.end_line) {
+          const span = c.end_line - c.start_line;
+          if (best === null || span < best.span) {
+            best = { id: c.id, span };
+          }
+        }
+      }
+      if (best) update.run(best.id, loc.id);
+    }
+  });
+  tx();
+}
+
+/**
  * Best-effort second pass: for every `arg_bindings` row whose `source_kind`
  * is `identifier` (i.e. the arg is a bare name like `userId` rather than
  * `req.userId` or `42`), try to resolve `source_symbol_id` by looking up the
  * name in the caller's scope. We try, in order:
  *   1. A formal parameter of the *caller* function/method with the same name.
- *   2. Any same-file symbol with the matching name (covers module-level
+ *   2. A kind='local' symbol whose parent_id is the caller (a top-level
+ *      const/let/var declared in the caller's body).
+ *   3. Any same-file symbol with the matching name (covers module-level
  *      consts, top-level functions, locally-defined classes).
- *   3. An imported binding in the same file — pointing at the imported
+ *   4. An imported binding in the same file — pointing at the imported
  *      symbol on the *exporting* file.
  *
  * No cross-scope alias chasing, no shadowing analysis. The whole point is to
@@ -131,6 +196,16 @@ function resolveArgBindingSources(db: Db): void {
   // only) to >40% (the dominant case: user code forwarding a param onward).
   const findCallerParamSymbol = db.prepare(
     "SELECT id FROM symbols WHERE parent_id = ? AND kind = 'param' AND name = ? LIMIT 1",
+  );
+  // Caller's own local — promoted to a `kind='local'` row in `symbols`
+  // (parent_id = caller's symbol id) by the local-symbol pipeline. Looking
+  // here picks up the dominant remaining identifier-arg pattern after params:
+  // `const x = computeX(); save(x)` where `x` is a top-level local in the
+  // caller. With params handling ~40% of identifier args, locals are the next
+  // big slice (the unresolved 77% in week-4 measurements were predominantly
+  // locals).
+  const findCallerLocalSymbol = db.prepare(
+    "SELECT id FROM symbols WHERE parent_id = ? AND kind = 'local' AND name = ? LIMIT 1",
   );
   // Same-file symbol, top-level only (parent_id IS NULL). Param symbols have
   // a non-null parent_id so this query naturally skips them.
@@ -168,7 +243,16 @@ function resolveArgBindingSources(db: Db): void {
         update.run(callerParam.id, r.id);
         continue;
       }
-      // 2) Same-file symbol (top-level).
+      // 2) Caller's own local — promoted to a kind='local' symbol row.
+      const callerLocal = findCallerLocalSymbol.get(
+        r.caller_id,
+        r.source_text,
+      ) as { id: number } | undefined;
+      if (callerLocal) {
+        update.run(callerLocal.id, r.id);
+        continue;
+      }
+      // 3) Same-file symbol (top-level).
       const sameFile = findSameFileSym.get(r.file_id, r.source_text) as
         | { id: number }
         | undefined;
@@ -176,7 +260,7 @@ function resolveArgBindingSources(db: Db): void {
         update.run(sameFile.id, r.id);
         continue;
       }
-      // 3) Imports → resolve to symbol in the imported file. We piggy-back on
+      // 4) Imports → resolve to symbol in the imported file. We piggy-back on
       // the import-resolution machinery already used by edges: an edge whose
       // to_name matches our identifier and whose from_symbol_id is in the
       // same file already had its target resolved — so we grab that

@@ -26,8 +26,10 @@ import { isStdlibName } from "./stdlib-names.js";
  * and the corpus (gitignored, regenerate via collect.mjs) at
  *   tools/calibration/corpus.jsonl
  *
- * Eval date: 2026-05-02. Pass `useLegacyWeights: true` to recover the
- * pre-calibration hand-set bucket constants for an A/B comparison.
+ * Eval date: 2026-05-02 (v2 — refit including dataflowScore as a 7th
+ * feature; v1 was 2026-05-02 morning, six features only). Pass
+ * `useLegacyWeights: true` to recover the pre-calibration hand-set bucket
+ * constants for an A/B comparison.
  * --------------------------------------------------------------------- */
 
 export interface CausalChainOptions {
@@ -108,8 +110,8 @@ const DEFAULT_RECENCY_DAYS = 90;
 const DEFAULT_TOP_N = 5;
 
 // Per-signal multipliers learned from the calibration corpus
-// (tools/calibration/fit.mjs, eval 2026-05-02). Each is applied to the
-// bucket-derived raw signal score before summation.
+// (tools/calibration/fit.mjs, eval 2026-05-02 v2 — 7-feature refit).
+// Each is applied to the bucket-derived raw signal score before summation.
 //
 // Fit on 101 unanchored entries (cgrca_input_caller / cgrca_input_trace,
 // i.e. the realistic case where the failure-input doesn't already name
@@ -120,20 +122,34 @@ const DEFAULT_TOP_N = 5;
 // every signal can only *help* a candidate's score (preserves the
 // rationale text's "dominant signal" semantics).
 //
-// Holdout (n=20): top-1 0.000 -> 0.200, top-5 0.450 -> 0.500,
-// MRR 0.197 -> 0.317 vs the legacy hand-set weights.
-const W_RECENCY = 0.0834;
-const W_PROXIMITY = 0.0; // raw fit -1.39, clipped — proximity is nearly
+// Holdout (n=20): top-1 0.000 -> 0.200 (clipped), top-5 0.350 -> 0.450,
+// MRR 0.156 -> 0.304 vs the legacy hand-set weights. Re-scoring the full
+// 101-entry unanchored corpus end-to-end (cgrca rca with these weights):
+// top-1 0.050 -> 0.099, top-5 0.337 -> 0.416, MRR 0.182 -> 0.235.
+//
+// Note on dataflowScore: raw weight = -0.49 (clipped to 0). The signal is
+// strongly correlated with hit-at-1 *when the gold is the candidate
+// inspected* (per-gold-candidate r=0.736, the highest of any feature), but
+// at the per-candidate level it doesn't discriminate gold from non-gold
+// (per-candidate r=-0.07): dataflow paths exist for many topology-neighbor
+// bystanders too. The LR pushes the weight negative; clipping removes it.
+// The infrastructure ships and the rationale text still fires when the
+// signal is dominant — but until the dataflow extractor distinguishes
+// kind='local' (true value provenance) from generic CALLS+arg-binding
+// reachability, the calibrated path runs with W_DATAFLOW=0.
+const W_RECENCY = 0.1815;
+const W_PROXIMITY = 0.0; // raw fit -1.53, clipped — proximity is nearly
                           // constant within a non-anchor candidate set, so
                           // it carries no discriminative signal here.
-const W_AMBIGUITY = 0.2021;
-const W_COCHANGE = 0.4306;
-const W_SUBSYSTEM = 0.8086;
-const W_COMPLEXITY = 0.4069;
+const W_AMBIGUITY = 0.0820;
+const W_COCHANGE = 0.5108;
+const W_SUBSYSTEM = 0.7840;
+const W_COMPLEXITY = 0.3136;
+const W_DATAFLOW = 0.0; // raw fit -0.49, clipped — see note above.
 
 // Legacy (pre-calibration) multipliers — all 1.0, i.e. raw bucket scores.
-// Data-flow defaults to 1.0 here too; the next calibration round will
-// re-tune all seven weights together.
+// Data-flow stays at 1.0 here so the legacy A/B path keeps the new signal
+// fully active (the legacy track is the "everything counts equally" floor).
 const LEGACY_W = {
   recency: 1.0,
   proximity: 1.0,
@@ -143,11 +159,6 @@ const LEGACY_W = {
   complexity: 1.0,
   dataflow: 1.0,
 };
-// Data-flow weight stays at 1.0 in the calibrated block too — week-3's
-// logistic regression had no data-flow column in its feature matrix, so we
-// can't use the existing fit. Holding it at 1.0 (same as legacy) lets us
-// measure the lift purely from the new signal; week-5 will refit including
-// data-flow alongside the existing six.
 const CALIBRATED_W = {
   recency: W_RECENCY,
   proximity: W_PROXIMITY,
@@ -155,7 +166,7 @@ const CALIBRATED_W = {
   coChange: W_COCHANGE,
   subsystem: W_SUBSYSTEM,
   complexity: W_COMPLEXITY,
-  dataflow: 1.0,
+  dataflow: W_DATAFLOW,
 };
 
 export function buildCausalChain(

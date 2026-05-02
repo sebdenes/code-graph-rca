@@ -537,7 +537,7 @@ describe("buildCausalChain", () => {
     expect(fatIdx).toBeLessThan(tinyIdx);
   });
 
-  it("calibrated weights — score regression baseline (locks in the 2026-05-02 fit)", () => {
+  it("calibrated weights — score regression baseline (locks in the 2026-05-02 v2 fit)", () => {
     // Tiny fixture exercising every signal so the scored sum is sensitive
     // to all six learned multipliers. If anyone retunes the weights this
     // assertion will fail loudly — pointing them at tools/calibration/fit.mjs.
@@ -584,12 +584,22 @@ describe("buildCausalChain", () => {
     const lb = legacy.find((c) => c.name === "B");
     expect(cb).toBeDefined();
     expect(lb).toBeDefined();
-    // Calibrated: 0.0834*3 + 0*1 + 0.2021*1 + 0 + 0 + ~0.2021 ≈ 0.658 (loc=10).
-    // Legacy:    1*3 + 1*1 + 1*1 + 0 + 0 + ~0.2021                 ≈ 5.202.
-    expect(cb!.score).toBeLessThan(1.5);
-    expect(lb!.score).toBeGreaterThan(4.5);
+    // Anchor "A" subsystem = "core"; B is in src/a.ts subsystem "core" so
+    // subsystemScore=0.5. B has 2 unresolved edges → ambiguityScore=1
+    // (bucket_2_3). recencyScore=3 (3 days ago). proximityScore=1 (direct
+    // caller). complexityScore = log2(10/20+1)*0.6 ≈ 0.351 (loc=10).
+    // dataflowScore=0 (no resolved CALLS edges in fixture).
+    //
+    // Calibrated (v2 weights, dataflow=0): 0.1815*3 + 0*1 + 0.0820*1
+    //   + 0.5108*0 + 0.7840*0.5 + 0.3136*0.351 + 0*0
+    //   = 0.5445 + 0.0820 + 0.3920 + 0.1101 ≈ 1.129
+    // Legacy (all 1.0): 3 + 1 + 1 + 0 + 0.5 + 0.351 + 0 = 5.851
+    expect(cb!.score).toBeGreaterThan(1.05);
+    expect(cb!.score).toBeLessThan(1.20);
+    expect(lb!.score).toBeGreaterThan(5.5);
+    expect(lb!.score).toBeLessThan(6.0);
     // Multipliers must drive a measurable gap between the two paths.
-    expect(Math.abs(cb!.score - lb!.score)).toBeGreaterThan(2);
+    expect(Math.abs(cb!.score - lb!.score)).toBeGreaterThan(4);
   });
 
   it("data-flow distance ranks an arg-source above a topology-only neighbor", () => {

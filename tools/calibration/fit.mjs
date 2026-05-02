@@ -32,6 +32,7 @@ const SIGNAL_KEYS = [
 	'coChangeScore',
 	'subsystemScore',
 	'complexityScore',
+	'dataflowScore',
 ];
 
 // Initial weights = 1.0 across the board (i.e. raw bucket sums, the legacy

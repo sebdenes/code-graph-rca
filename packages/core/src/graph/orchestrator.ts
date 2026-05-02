@@ -36,9 +36,31 @@ export async function indexScope(opts: IndexOptions): Promise<IndexResult> {
     // params + arg_bindings cascade with symbols/edges, so the existing CASCADE
     // chain handles them — but we delete explicitly to be defensive against
     // future schema relaxations and to surface ordering bugs early.
-    db.exec(
-      "DELETE FROM arg_bindings; DELETE FROM params; DELETE FROM imports; DELETE FROM edges; DELETE FROM symbols; DELETE FROM files;",
-    );
+    //
+    // Suspend FK enforcement around the bulk clear. Per-row FK checks dominate
+    // wall time on a populated DB. Measured on athlai (54k edges, 17k symbols,
+    // 7k arg bindings, 1.4k files) the same DELETE chain takes:
+    //   - foreign_keys = ON           : 5800 ms  (per-row cascade check)
+    //   - defer_foreign_keys = ON     : 5800 ms  (deferred check at COMMIT
+    //                                             still scans every row)
+    //   - foreign_keys = OFF          :    6 ms  (no checks)
+    // The brief originally picked deferred-FK; measurement falsified that —
+    // SQLite's deferred-FK still scans every row at COMMIT, just batched. The
+    // only real win is OFF. We're deleting every child table AND every parent
+    // table, so the constraint is trivially satisfied at the end. The pragma
+    // is restored immediately so insert + resolve see normal enforcement.
+    // Wrapped in a transaction so a crash mid-clear leaves the DB intact
+    // rather than partially wiped. The child-before-parent ordering is
+    // strictly unnecessary with FK off but kept to surface ordering bugs if
+    // the pragma ever silently flips on.
+    db.pragma("foreign_keys = OFF");
+    try {
+      db.exec(
+        "BEGIN; DELETE FROM arg_bindings; DELETE FROM params; DELETE FROM imports; DELETE FROM edges; DELETE FROM symbols; DELETE FROM files; COMMIT;",
+      );
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
   }
   // Stamp repo_root into meta so a moved sqlite is self-describing.
   try {

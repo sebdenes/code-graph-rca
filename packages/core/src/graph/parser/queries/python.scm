@@ -62,6 +62,30 @@
     (attribute
       attribute: (identifier) @extends.target)))
 
+; ---------------- Locals ----------------
+; Top-level (depth-1) assignments inside a function body. We require the
+; left-hand side to be a single identifier — tuple/list patterns and subscript
+; targets are intentionally skipped (the "destructuring" cases). Comprehension
+; targets are out of scope by construction: list/dict/set comprehensions wrap
+; their `for in` in their own node, not directly under `block`. Loop variables
+; (`for x in ...`) are also out of scope — they live inside `for_statement`,
+; not the block itself.
+;
+; Annotated forms (`x: int = 1`) parse as `assignment` with a `type` field
+; alongside `left` + `right`; the same pattern handles both because we match
+; on `left` and `right` only.
+;
+; A function body is `(function_definition body: (block ...))`. The block
+; node is shared with class bodies and nested blocks; tree-sitter doesn't
+; re-fire patterns for nested blocks, so depth > 1 assignments stay out
+; of scope by construction (no separate pattern below).
+
+(function_definition
+  body: (block
+    (expression_statement
+      (assignment
+        left: (identifier) @symbol.name) @symbol.local)))
+
 ; ---------------- Calls ----------------
 
 ; Direct identifier call: foo(...)

@@ -12,7 +12,15 @@ export type SymbolKind =
   // arg_bindings.source_symbol_id (FK → symbols.id) can target it. Inserted
   // by insertExtracted's params post-pass; lives at the enclosing function's
   // start_line/end_line, with parent_id pointing at that function.
-  | "param";
+  | "param"
+  // Top-level local variable (const/let/var in TS, top-level assignment in
+  // Python) declared inside a function/method body. Extracted only at depth
+  // 1 of the body — nested scopes, destructuring patterns, comprehension
+  // targets, and loop iterators are intentionally skipped. parent_id points
+  // at the enclosing function symbol so resolveArgBindingSources can find
+  // it when an identifier arg names a local. Same role as `param`: gives
+  // arg_bindings.source_symbol_id a concrete row to FK at.
+  | "local";
 
 export type EdgeKind = "CALLS" | "IMPORTS" | "EXTENDS" | "IMPLEMENTS";
 

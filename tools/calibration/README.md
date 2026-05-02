@@ -215,6 +215,61 @@ the anchor auto-win**, while subsystem-match dominates the absolute
 weight ranking. Proximity has near-zero variance among non-anchor
 candidates, so the fit pushes it negative and the clip removes it.
 
+### 2026-05-02 v2 fit (refit including dataflowScore)
+
+Week-4 added `dataflowScore` to the causal scorer but its weight stayed
+at 1.0 (uncalibrated). Because the v1 calibrated weights are tiny (recency
+0.08, ambiguity 0.20, subsystem 0.81), the 1.5 raw dataflow bonus
+dominated and end-to-end top-1 on the unanchored corpus regressed from
+0.099 (v1 calibrated) to 0.089 (v1 calibrated + uncalibrated dataflow).
+
+The v2 fit re-runs the same 80/20 logistic regression with `dataflowScore`
+as a 7th feature. Holdout (n=20, seed=42):
+
+| weights              | top-1 | top-5 | MRR   |
+| -------------------- | ----- | ----- | ----- |
+| legacy (all 1.0)     | 0.000 | 0.350 | 0.156 |
+| learned (raw)        | 0.300 | 0.550 | 0.420 |
+| learned (clipped)    | 0.200 | 0.450 | 0.304 |
+
+End-to-end re-score on the full 101-entry unanchored corpus
+(`node tools/calibration/score.mjs --mode unanchored`):
+
+| build                            | top-1 | top-5 | MRR   |
+| -------------------------------- | ----- | ----- | ----- |
+| legacy (`--legacy`)              | 0.050 | 0.337 | 0.182 |
+| v1 calibrated + dataflow=1.0     | 0.089 | 0.327 | 0.198 |
+| v2 calibrated (this fit)         | 0.099 | 0.416 | 0.235 |
+
+v2 production multipliers (clipped):
+
+```
+recencyScore       0.1815
+proximityScore     0.0000   (raw -1.53 → clipped; same near-constant story)
+ambiguityScore     0.0820
+coChangeScore      0.5108
+subsystemScore     0.7840
+complexityScore    0.3136
+dataflowScore      0.0000   (raw -0.49 → clipped; see note below)
+```
+
+**On the dataflow weight going negative.** `dataflowScore` correlates
+strongly with hit-at-1 *when sampled only on the gold candidate*
+(per-gold Pearson r=0.736 — the highest of any signal). But at the
+per-candidate level it is essentially noise (per-candidate r=-0.07):
+in the v0.x dataflow extractor a CALLS+arg-binding path back to the
+anchor exists for many topology-neighbor bystanders too, so high
+`dataflowScore` does not differentiate gold from non-gold. The LR
+pushes the weight negative and the production clip removes it.
+
+The infrastructure ships and the rationale-text path still fires when
+the signal is dominant on legacy weights — but until the dataflow
+extractor distinguishes `kind='local'` (true value provenance) from
+generic reachability, the calibrated path runs with `W_DATAFLOW=0`.
+A future round (raise local-resolution rate from 22.8% → 50%+, then
+re-fit) is the cleanest path to a non-zero weight. Switching to L1
+(Lasso) won't help here — the issue is signal quality, not collinearity.
+
 The `--legacy-weights` CLI flag (and `useLegacyWeights: true` option on
 `buildCausalChain`) preserves the original hand-set weights for users
 who pass `symbol:<known-symbol>` and expect the anchor to lead.

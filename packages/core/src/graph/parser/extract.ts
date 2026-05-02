@@ -21,6 +21,7 @@ const SYMBOL_CAPTURES: Record<string, SymbolKind> = {
   "symbol.const": "const",
   "symbol.enum": "enum",
   "symbol.type": "type",
+  "symbol.local": "local",
 };
 
 interface SymbolWithRange extends ExtractedSymbol {
@@ -118,11 +119,30 @@ export async function extractFile(opts: {
       const nameCap = idx.byCapture.get("symbol.name")?.[0];
       if (!nameCap) continue;
       const name = captureText(nameCap);
-      const parentCap = idx.byCapture.get("symbol.parent")?.[0];
-      const parentName = parentCap ? captureText(parentCap) : null;
+      let parentName: string | null = null;
+      let startLine = innerNode.startPosition.row + 1;
+      let endLine = innerNode.endPosition.row + 1;
+      let signature: string | null = firstSignatureLine(innerNode);
+      if (primary.kind === "local") {
+        // Local var: parent is the enclosing function-shaped node, located
+        // by walking up from the captured declaration. We deliberately don't
+        // use a @symbol.parent capture here because tree-sitter's capture
+        // mechanics make it awkward to surface the enclosing function name
+        // through a query that anchors on the body — walking the ancestor
+        // chain is one hop and unambiguous. end_line stretches to the
+        // enclosing function's end so resolveArgBindingSources can scope a
+        // local to its declaring function. signature is the declaration's
+        // first line, trimmed.
+        const enclosing = findEnclosingFunctionNode(innerNode);
+        if (!enclosing) continue;
+        parentName = enclosingFunctionName(enclosing);
+        if (!parentName) continue;
+        endLine = enclosing.endPosition.row + 1;
+      } else {
+        const parentCap = idx.byCapture.get("symbol.parent")?.[0];
+        parentName = parentCap ? captureText(parentCap) : null;
+      }
       const exported = idx.byCapture.has("symbol.exported");
-      const startLine = innerNode.startPosition.row + 1;
-      const endLine = innerNode.endPosition.row + 1;
       const key = `${primary.kind}:${name}:${parentName ?? ""}:${innerNode.startIndex}`;
       const existing = symbolsByKey.get(key);
       if (existing) {
@@ -134,7 +154,7 @@ export async function extractFile(opts: {
           parentName,
           startLine,
           endLine,
-          signature: firstSignatureLine(innerNode),
+          signature,
           exported,
           startIndex: innerNode.startIndex,
           endIndex: innerNode.endIndex,
@@ -258,6 +278,54 @@ export async function extractFile(opts: {
   // query is cached at module level; do not delete.
   parser.delete();
   return out;
+}
+
+/**
+ * Walk up from a captured local declaration to its enclosing function-shaped
+ * node (function_declaration, function_expression, arrow_function,
+ * method_definition, function_definition for Python). Returns null if no such
+ * ancestor exists within a small bounded number of hops.
+ */
+function findEnclosingFunctionNode(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  let cur: Parser.SyntaxNode | null = node.parent;
+  // Bounded walk to avoid pathological costs on weird trees. Function bodies
+  // wrap declarations as `block`/`statement_block` → function-shaped node, so
+  // 2 hops cover the depth-1 case; we allow a few more for paranoia.
+  for (let i = 0; i < 8 && cur; i++) {
+    switch (cur.type) {
+      case "function_declaration":
+      case "function_expression":
+      case "arrow_function":
+      case "method_definition":
+      case "function_definition":
+        return cur;
+    }
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/**
+ * Read the name of an enclosing function-shaped node. For arrow_function and
+ * function_expression we walk one more level: those typically appear as the
+ * value of a variable_declarator or pair, so the name is the declarator's
+ * identifier. Returns null when no name can be recovered (anonymous IIFEs
+ * etc. — those locals are dropped because they have no addressable parent).
+ */
+function enclosingFunctionName(node: Parser.SyntaxNode): string | null {
+  const directName = node.childForFieldName("name");
+  if (directName) return directName.text;
+  // Anonymous: arrow / function expression assigned somewhere. Walk up one
+  // level and look for a variable_declarator's name field.
+  const parent = node.parent;
+  if (!parent) return null;
+  if (parent.type === "variable_declarator" || parent.type === "assignment") {
+    const n = parent.childForFieldName("name") ?? parent.childForFieldName("left");
+    if (n && (n.type === "identifier" || n.type === "property_identifier")) {
+      return n.text;
+    }
+  }
+  return null;
 }
 
 /** Walk up from a callee identifier/property to its enclosing call_expression. */
@@ -420,6 +488,7 @@ function pickPrimarySymbolCapture(idx: RawMatch): {
     "symbol.const",
     "symbol.enum",
     "symbol.type",
+    "symbol.local",
   ];
   for (const name of ordered) {
     const cap = idx.byCapture.get(name)?.[0];

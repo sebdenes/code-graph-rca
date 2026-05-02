@@ -85,4 +85,44 @@ describe("arg_bindings extraction (TypeScript)", () => {
     expect(sym.kind).toBe("param");
     expect(sym.parent_name).toBe("handleRequest");
   });
+
+  it("resolves an identifier arg to a kind='local' source symbol in the caller", async () => {
+    // localCarrier: const payload = "hello"; return relay(payload);
+    // `payload` is a top-level local in localCarrier's body; the arg binding
+    // for relay(payload) should resolve to that kind='local' symbol row,
+    // confirming the locals-as-symbols round trip end-to-end.
+    const r = await indexScope({ repoRoot: FIXTURE });
+    const row = r.db
+      .prepare(
+        `SELECT ab.source_kind, ab.source_text, ab.source_symbol_id
+           FROM arg_bindings ab
+           JOIN edges e ON e.id = ab.edge_id
+           JOIN symbols s ON s.id = e.from_symbol_id
+          WHERE s.name = 'localCarrier' AND e.to_name = 'relay'`,
+      )
+      .all() as Array<{
+        source_kind: string;
+        source_text: string;
+        source_symbol_id: number | null;
+      }>;
+    expect(row).toHaveLength(1);
+    expect(row[0]!.source_kind).toBe("identifier");
+    expect(row[0]!.source_text).toBe("payload");
+    expect(row[0]!.source_symbol_id).not.toBeNull();
+    const sym = r.db
+      .prepare(
+        `SELECT s.name, s.kind, p.name AS parent_name
+           FROM symbols s
+           LEFT JOIN symbols p ON p.id = s.parent_id
+          WHERE s.id = ?`,
+      )
+      .get(row[0]!.source_symbol_id) as {
+        name: string;
+        kind: string;
+        parent_name: string | null;
+      };
+    expect(sym.name).toBe("payload");
+    expect(sym.kind).toBe("local");
+    expect(sym.parent_name).toBe("localCarrier");
+  });
 });

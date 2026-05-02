@@ -338,6 +338,19 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ name, sinceDays, maxCommits }) => {
+      // Daemon doesn't accept maxCommits yet — only route when caller didn't pass it.
+      if (typeof maxCommits !== "number") {
+        const params: Record<string, unknown> = { name };
+        if (typeof sinceDays === "number") params.sinceDays = sinceDays;
+        const viaDaemon = await tryDaemon<ReturnType<typeof recentlyChangedNear>>(
+          "changed", opts.repoRoot, params,
+        );
+        if (viaDaemon !== null) {
+          logVia("cgrca_recentlyChangedNear", "daemon");
+          return asJson(viaDaemon);
+        }
+      }
+      logVia("cgrca_recentlyChangedNear", "in-process");
       const { db } = await ensureIndex(opts.repoRoot);
       const queryOpts: { repoRoot: string; sinceDays?: number; maxCommits?: number } = {
         repoRoot: opts.repoRoot,
@@ -378,6 +391,18 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
       if (typeof args.maxFiles === "number") budget.maxFiles = args.maxFiles;
       if (typeof args.maxLoc === "number") budget.maxLoc = args.maxLoc;
       if (typeof args.maxDepth === "number") budget.maxDepth = args.maxDepth;
+      const rpcParams: Record<string, unknown> = { failure };
+      if (Object.keys(budget).length > 0) rpcParams.budget = budget;
+      const viaDaemon = await tryDaemon<Awaited<ReturnType<typeof runRca>>>(
+        "rca", opts.repoRoot, rpcParams,
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_rca", "daemon");
+        const { prompt: _prompt, ...rest } = viaDaemon;
+        void _prompt;
+        return asJson(rest);
+      }
+      logVia("cgrca_rca", "in-process");
       const result = await runRca({
         failureScope: failure,
         repoRoot: opts.repoRoot,
@@ -408,6 +433,14 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
     },
     async (args) => {
       const failure = buildFailureScope(args);
+      const viaDaemon = await tryDaemon<Awaited<ReturnType<typeof runRca>>>(
+        "rca", opts.repoRoot, { failure },
+      );
+      if (viaDaemon !== null) {
+        logVia("cgrca_rcaPrompt", "daemon");
+        return { content: [{ type: "text" as const, text: viaDaemon.prompt }] };
+      }
+      logVia("cgrca_rcaPrompt", "in-process");
       const result = await runRca({ failureScope: failure, repoRoot: opts.repoRoot });
       return { content: [{ type: "text" as const, text: result.prompt }] };
     },

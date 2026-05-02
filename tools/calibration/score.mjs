@@ -167,6 +167,7 @@ function scoreOne(mode, opts) {
 		'coChangeScore',
 		'subsystemScore',
 		'complexityScore',
+		'dataflowScore',
 	];
 	const signalSeries = Object.fromEntries(SIGNAL_KEYS.map((k) => [k, []]));
 	const hitSeries = [];
