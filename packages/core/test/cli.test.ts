@@ -113,6 +113,44 @@ describe("cli smoke", () => {
     expect(r.stderr).toContain("unknown command");
   });
 
+  it("rca with free-text prose returns >0 candidates (v0.5 Phase 1)", () => {
+    // Pre-Phase-1: any input that wasn't `symbol:` / `file:` / `test:` /
+    // a stack-trace path collapsed to {kind:"symbol", name:spec} and
+    // returned 0 candidates because no symbol named the whole sentence.
+    // Now we tokenize prose and match against the KG.
+    const r = run([
+      "rca",
+      "athlete silently gets wrong plan when login fails",
+      "--repo",
+      TS_FIXTURE,
+      "--json",
+    ]);
+    expect(r.status).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    expect(Array.isArray(parsed.causalCandidates)).toBe(true);
+    // The token "login" hits the login symbol in the fixture's auth pkg.
+    expect(parsed.causalCandidates.length).toBeGreaterThan(0);
+  });
+
+  it("rca file:PATH returns >=1 candidate (v0.5 Phase 1 file: fix)", () => {
+    // Pre-Phase-1: file: returned null anchor + 0 candidates even when the
+    // file existed in scope. Now it seeds the chain with every symbol in
+    // the file ranked by the 7-signal scorer.
+    const r = run([
+      "rca",
+      "file:packages/auth/src/login.ts",
+      "--repo",
+      TS_FIXTURE,
+      "--json",
+    ]);
+    expect(r.status).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    expect(Array.isArray(parsed.causalCandidates)).toBe(true);
+    expect(parsed.causalCandidates.length).toBeGreaterThanOrEqual(1);
+    // Anchor should be one of the symbols in login.ts (login or KNOWN).
+    expect(parsed.primarySymbol).not.toBeNull();
+  });
+
   it("define --persist reuses the existing sqlite on warm calls", () => {
     const dir = mkdtempSync(join(tmpdir(), "cgrca-persist-"));
     const sqlitePath = join(dir, "graph.sqlite");

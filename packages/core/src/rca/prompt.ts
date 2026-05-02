@@ -5,7 +5,9 @@ export type FailureScope =
   | { kind: "stack-trace"; text: string }
   | { kind: "failing-test"; path: string; testName?: string }
   | { kind: "symbol"; name: string; file?: string }
-  | { kind: "file"; path: string };
+  | { kind: "file"; path: string }
+  // v0.5 Phase 1 — prose / intent / partial-trace input.
+  | { kind: "free-text"; text: string };
 
 /**
  * Structured input to {@link formatRcaPrompt}. Mirrors the engine's
@@ -78,6 +80,11 @@ function renderFailure(failure: FailureScope): string {
     }
     case "file":
       return `Investigating file: ${failure.path}`;
+    case "free-text":
+      // Free-text inputs are arbitrary user prose. Render verbatim inside
+      // a fenced block so a stack-trace-shaped paste keeps its formatting,
+      // and a sentence-shaped one renders cleanly too.
+      return "Free-text failure description:\n\n```\n" + failure.text + "\n```";
   }
 }
 

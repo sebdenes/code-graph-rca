@@ -40,9 +40,11 @@ Commands:
 
 <failure> formats:
   symbol:<name>             Investigate a symbol by name.
-  file:<path>               Investigate a file.
+  file:<path>               Investigate a file (all symbols ranked).
   test:<path>               A failing test path.
   <path>                    A file containing a stack trace.
+  <text>                    Free-text description (prose, intent, partial
+                            trace) — tokenized + matched against the KG.
 
 Common options:
   --repo <path>             Repo root (default: cwd).
@@ -97,6 +99,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       flags.topN = argv[++i] ?? "";
     } else if (a === "--legacy-weights") {
       flags["legacy-weights"] = true;
+    } else if (a === "--legacy-parse") {
+      flags["legacy-parse"] = true;
     } else if (a === "--format") {
       flags.format = argv[++i] ?? "";
     } else if (a.startsWith("--format=")) {
@@ -276,18 +280,23 @@ function reusePersistedDb(
   return { db, reused: true };
 }
 
-function parseFailure(spec: string, repoRoot: string): FailureScope {
+function parseFailure(spec: string, repoRoot: string, legacyParse = false): FailureScope {
   if (spec.startsWith("symbol:")) return { kind: "symbol", name: spec.slice("symbol:".length) };
   if (spec.startsWith("file:")) return { kind: "file", path: spec.slice("file:".length) };
   if (spec.startsWith("test:")) return { kind: "failing-test", path: spec.slice("test:".length) };
-  // Otherwise treat as a stack-trace file path.
+  // Path on disk → treat as a stack-trace dump.
   const abs = resolve(repoRoot, spec);
   if (existsSync(abs)) {
     const text = readFileSync(abs, "utf8");
     return { kind: "stack-trace", text };
   }
-  // Fall back to symbol name.
-  return { kind: "symbol", name: spec };
+  // --legacy-parse: collapse bare input to `{kind:"symbol", name:spec}`.
+  // The v0.5 eval harness uses this to A/B current-vs-text on the same
+  // binary. After Phase 1 eval, this flag becomes deprecation-only.
+  if (legacyParse) return { kind: "symbol", name: spec };
+  // v0.5 Phase 1 default: route prose / intent / partial-trace inputs
+  // through the free-text path (textmode tokenizer + multi-anchor walker).
+  return { kind: "free-text", text: spec };
 }
 
 async function cmdRca(args: ParsedArgs): Promise<number> {
@@ -297,7 +306,8 @@ async function cmdRca(args: ParsedArgs): Promise<number> {
     return 2;
   }
   const repoRoot = repoRootFrom(args.flags);
-  const failure = parseFailure(failureArg, repoRoot);
+  const legacyParse = args.flags["legacy-parse"] === true;
+  const failure = parseFailure(failureArg, repoRoot, legacyParse);
   const budget: { maxFiles?: number; maxLoc?: number; maxDepth?: number } = {};
   if (typeof args.flags.maxFiles === "string") budget.maxFiles = Number(args.flags.maxFiles);
   if (typeof args.flags.maxLoc === "string") budget.maxLoc = Number(args.flags.maxLoc);

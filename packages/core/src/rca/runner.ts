@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 import { resolveScope } from "../graph/scope.js";
 import { indexScope } from "../graph/orchestrator.js";
 import {
@@ -16,6 +16,7 @@ import type {
   Definition,
   RecentChange,
 } from "../types.js";
+import { languageOf, walk } from "../graph/walker.js";
 import { buildGraphContext } from "./context.js";
 import { formatRcaPrompt } from "./prompt.js";
 import {
@@ -24,12 +25,16 @@ import {
   hydrateCalleeTree,
 } from "./recency.js";
 import { buildCausalChain } from "./causal.js";
+import { tokenizeFailure, matchTokensAgainstKg } from "./textmode.js";
+import type { Db } from "../graph/db.js";
 
 export type FailureScope =
   | { kind: "stack-trace"; text: string }
   | { kind: "failing-test"; path: string; testName?: string }
   | { kind: "symbol"; name: string; file?: string }
-  | { kind: "file"; path: string };
+  | { kind: "file"; path: string }
+  // v0.5 Phase 1 free-text fallback (see textmode.ts).
+  | { kind: "free-text"; text: string };
 
 export interface RcaRequest {
   failureScope: FailureScope;
@@ -72,6 +77,15 @@ export interface RcaResult {
 
 export async function runRca(req: RcaRequest): Promise<RcaResult> {
   const notes: string[] = [];
+
+  // v0.5 Phase 1 — free-text dispatch. Index the broad repo (capped by the
+  // budget so we don't melt CI), tokenize the prose, hand the top-K
+  // matches to the multi-anchor causal walker. We branch out before the
+  // normal scope path because resolveScope can't pick seeds from prose.
+  if (req.failureScope.kind === "free-text") {
+    return runFreeTextRca(req, notes);
+  }
+
   const scopeResult = resolveScope(req.failureScope, req.repoRoot, req.budget ?? {});
   notes.push(...scopeResult.notes);
 
@@ -233,6 +247,43 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
       }
     }
 
+    // v0.5 Phase 1 — file: shape now seeds the chain with EVERY symbol in
+    // the file, not the single first function/class/const that the anchor
+    // picker happened to land on. The single-anchor path above still ran
+    // (so primarySymbol stays populated for back-compat), but we replace
+    // its candidates with the merged multi-anchor result so the table
+    // surfaces every symbol in the file ranked by the existing 7 signals.
+    if (req.failureScope.kind === "file" && firstSeed) {
+      const fileSeeds = symbolsInFile(indexed.db, firstSeed)
+        .filter(
+          (s) =>
+            s.kind === "function" ||
+            s.kind === "method" ||
+            s.kind === "class" ||
+            s.kind === "const" ||
+            s.kind === "interface" ||
+            s.kind === "type" ||
+            s.kind === "enum",
+        )
+        .map((s) => ({ name: s.name, file: firstSeed, line: s.startLine }));
+      if (fileSeeds.length === 0) {
+        notes.push(`no indexed symbols in ${firstSeed}`);
+      } else {
+        const merged = await runMultiAnchor({
+          db: indexed.db,
+          repoRoot: req.repoRoot,
+          seeds: fileSeeds,
+          topN: req.topN ?? 5,
+          ...(req.useLegacyWeights ? { useLegacyWeights: true } : {}),
+        });
+        causalCandidates = merged.candidates;
+        // Promote the highest-scoring seed to primarySymbol so the table
+        // header / `primarySymbol` field reflects what actually drove the
+        // ranking. Falls back to the original anchor if every seed scored 0.
+        if (merged.topAnchorName) primarySymbol = merged.topAnchorName;
+      }
+    }
+
     const firstHypothesis = computeFirstHypothesis(causalCandidates);
 
     const scope = {
@@ -307,4 +358,314 @@ function computeFirstHypothesis(
         : top.file
       : "unknown location";
   return `The root cause is most likely in ${top.name} (${loc}) — ${top.rationale}`;
+}
+
+// ---------------------------------------------------------------------------
+// v0.5 Phase 1 — multi-anchor helpers
+// ---------------------------------------------------------------------------
+
+interface MultiAnchorSeed {
+  name: string;
+  file: string | null;
+  line: number | null;
+}
+
+interface MultiAnchorOptions {
+  db: Db;
+  repoRoot: string;
+  seeds: MultiAnchorSeed[];
+  topN: number;
+  useLegacyWeights?: boolean;
+}
+
+interface MultiAnchorResult {
+  candidates: CausalCandidate[];
+  /** Name of the highest-scoring seed (first to surface in the merged list). */
+  topAnchorName: string | null;
+}
+
+/**
+ * Run `buildCausalChain` once per anchor seed and merge the results,
+ * keeping the MAX score per (file, name) key. The MAX rule (vs SUM) means
+ * the same symbol surfacing as a strong callee for two seeds doesn't
+ * "double up" — each seed represents a hypothesis, not a vote.
+ *
+ * Recency hydration runs once per seed (each call to buildCausalChain
+ * needs hydrated trees). For large file: anchors this is N git-blame
+ * shell-outs; the recency hydrator caches per (file, line-range) so the
+ * cost is amortized across overlapping neighborhoods.
+ *
+ * Returns the topN merged candidates. `topAnchorName` is the seed that
+ * produced the highest-scoring final candidate so the runner can update
+ * `primarySymbol` to something the user will recognize.
+ */
+async function runMultiAnchor(
+  opts: MultiAnchorOptions,
+): Promise<MultiAnchorResult> {
+  const merged = new Map<string, CausalCandidate>();
+  // Track which seed produced the merged top entry — used to update
+  // primarySymbol in the runner.
+  let topScore = -Infinity;
+  let topSeedName: string | null = null;
+  const isGit = isGitRepo(opts.repoRoot);
+  // One hydrator across all seeds so the per (file,line-range) cache is
+  // shared — overlapping caller/callee neighborhoods are common across
+  // seeds in the same file.
+  const hydrator = isGit
+    ? createRecencyHydrator({ repoRoot: opts.repoRoot })
+    : null;
+
+  for (const seed of opts.seeds) {
+    let callerTree: CallerTree;
+    let calleeTree: CalleeTree;
+    try {
+      callerTree = callersOf(opts.db, seed.name, {
+        depth: 2,
+        minConfidence: 0.5,
+      });
+      calleeTree = calleesOf(opts.db, seed.name, { depth: 1 });
+    } catch {
+      continue;
+    }
+
+    let anchorRecentChanges: RecentChange[] = [];
+    if (hydrator) {
+      try {
+        hydrateCallerTree(callerTree, opts.db, hydrator);
+        hydrateCalleeTree(calleeTree, opts.db, hydrator);
+        const defs = definitionOf(opts.db, seed.name);
+        const firstDef = defs[0];
+        if (firstDef) {
+          anchorRecentChanges = hydrator.fetch(
+            firstDef.file,
+            firstDef.startLine,
+            firstDef.endLine,
+          );
+        }
+      } catch {
+        // Recency is best-effort — keep going if a single seed's blame
+        // shells fail.
+      }
+    }
+
+    let perSeed: CausalCandidate[] = [];
+    try {
+      perSeed = buildCausalChain(
+        {
+          anchor: {
+            name: seed.name,
+            file: seed.file,
+            line: seed.line,
+            recentChanges: anchorRecentChanges,
+          },
+          callerTree,
+          calleeTree,
+          db: opts.db,
+        },
+        {
+          recencyDays: 90,
+          // Pull more per-seed than the final topN so the merge has
+          // enough material to pick the best across seeds.
+          topN: Math.max(opts.topN * 2, 10),
+          ...(opts.useLegacyWeights ? { useLegacyWeights: true } : {}),
+        },
+      );
+    } catch {
+      continue;
+    }
+
+    for (const cand of perSeed) {
+      const key = `${cand.file ?? "?"}:${cand.name}`;
+      const existing = merged.get(key);
+      if (!existing || cand.score > existing.score) {
+        merged.set(key, cand);
+      }
+      if (cand.score > topScore) {
+        topScore = cand.score;
+        topSeedName = seed.name;
+      }
+    }
+  }
+
+  const sorted = [...merged.values()].sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const af = a.file ?? "";
+    const bf = b.file ?? "";
+    if (af !== bf) return af < bf ? -1 : 1;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
+
+  return {
+    candidates: sorted.slice(0, opts.topN),
+    topAnchorName: topSeedName,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// v0.5 Phase 1 — free-text RCA path
+// ---------------------------------------------------------------------------
+
+/**
+ * Free-text dispatch: index a broad slice of the repo (capped by the
+ * budget), tokenize the failure, hand the top-K token matches to the
+ * multi-anchor walker.
+ *
+ * We index broadly here because resolveScope's free-text branch returned
+ * no seeds — it can't, since prose doesn't pin to a specific file. The
+ * scope budget caps how much we crawl: default 200 files.
+ *
+ * Behaves like the single-anchor path for the rest of the contract:
+ * builds graphContext, formats prompt (when requested), populates
+ * primarySymbol from the highest-scoring token-match seed.
+ */
+async function runFreeTextRca(
+  req: RcaRequest,
+  notes: string[],
+): Promise<RcaResult> {
+  if (req.failureScope.kind !== "free-text") {
+    throw new Error("runFreeTextRca called with non-free-text scope");
+  }
+  const queries: Array<{ name: string; result: unknown }> = [];
+  let primarySymbol: string | null = null;
+
+  const tokens = tokenizeFailure(req.failureScope.text);
+  if (
+    tokens.identifierTokens.length === 0 &&
+    tokens.literalTokens.length === 0
+  ) {
+    notes.push("free-text: no tokens extracted from input");
+    return emptyFreeTextResult(req, notes, queries, primarySymbol);
+  }
+
+  // Discover parseable files at the repo root, capped by the budget. We
+  // don't reuse resolveScope for this — that walker is import-graph
+  // expansion from a known seed, which we don't have. We just want a
+  // shallow file list to feed indexScope.
+  const maxFiles = req.budget?.maxFiles ?? 200;
+  const broadFiles = collectBroadScope(req.repoRoot, maxFiles);
+  if (broadFiles.length === 0) {
+    notes.push("free-text: no parseable files in repo root");
+    return emptyFreeTextResult(req, notes, queries, primarySymbol);
+  }
+
+  const indexed = await indexScope({
+    repoRoot: req.repoRoot,
+    scope: broadFiles,
+    maxFiles,
+    ...(req.persist ? { persist: req.persist } : {}),
+  });
+
+  try {
+    const matches = matchTokensAgainstKg(indexed.db, tokens);
+    if (matches.length === 0) {
+      notes.push("free-text: no token matches in indexed scope");
+      return finalizeResult(req, notes, queries, primarySymbol, [], {
+        files: broadFiles,
+        symbolCount: indexed.symbolCount,
+        edgeCount: indexed.edgeCount,
+      });
+    }
+    queries.push({
+      name: "tokenMatches",
+      result: matches.slice(0, 16),
+    });
+
+    // Top-K (default 8) token matches → anchor seeds for the chain walker.
+    const seeds: MultiAnchorSeed[] = matches.slice(0, 8).map((m) => ({
+      name: m.symbolName,
+      file: m.file,
+      line: m.line,
+    }));
+    primarySymbol = seeds[0]?.name ?? null;
+
+    const merged = await runMultiAnchor({
+      db: indexed.db,
+      repoRoot: req.repoRoot,
+      seeds,
+      topN: req.topN ?? 5,
+      ...(req.useLegacyWeights ? { useLegacyWeights: true } : {}),
+    });
+    if (merged.topAnchorName) primarySymbol = merged.topAnchorName;
+
+    return finalizeResult(req, notes, queries, primarySymbol, merged.candidates, {
+      files: broadFiles,
+      symbolCount: indexed.symbolCount,
+      edgeCount: indexed.edgeCount,
+    });
+  } finally {
+    indexed.db.close();
+  }
+}
+
+/**
+ * Walk `repoRoot` with the same ignore set scope.ts uses, returning up to
+ * `maxFiles` parseable files. This is intentionally shallower than
+ * scope.ts's `scanRepo` (no package detection, no Python-package
+ * inference) because free-text only needs files to feed indexScope.
+ */
+function collectBroadScope(repoRoot: string, maxFiles: number): string[] {
+  // Reuse walker — it loads .gitignore and the IGNORE_DIRS set, and guards
+  // against symlink loops. The bespoke walker that lived here previously
+  // skipped only a hardcoded dot-dir set, which let `.claude/`, `.agent/`,
+  // and `.ruff_cache/` exhaust the maxFiles budget before reaching real
+  // source. That was the silent reason free-text RCA returned 0 candidates
+  // on real bugs in v0.5 Phase 1's eval (2026-05-02).
+  try {
+    if (!statSync(repoRoot).isDirectory()) return [];
+  } catch {
+    return [];
+  }
+  // Walk uncapped (gitignore keeps it bounded) and trim *after* filtering
+  // to parseable, so maxFiles refers to indexable Python/TS source — not
+  // a quota that .md/.json/.txt files can eat into.
+  return walk(repoRoot)
+    .filter((f) => f.language === "typescript" || f.language === "python")
+    .slice(0, maxFiles)
+    .map((f) => f.relPath);
+}
+
+function emptyFreeTextResult(
+  req: RcaRequest,
+  notes: string[],
+  queries: Array<{ name: string; result: unknown }>,
+  primarySymbol: string | null,
+): RcaResult {
+  return finalizeResult(req, notes, queries, primarySymbol, [], {
+    files: [],
+    symbolCount: 0,
+    edgeCount: 0,
+  });
+}
+
+function finalizeResult(
+  req: RcaRequest,
+  notes: string[],
+  queries: Array<{ name: string; result: unknown }>,
+  primarySymbol: string | null,
+  causalCandidates: CausalCandidate[],
+  scope: { files: string[]; symbolCount: number; edgeCount: number },
+): RcaResult {
+  const firstHypothesis = computeFirstHypothesis(causalCandidates);
+  const graphContext = buildGraphContext({ primarySymbol, scope, queries });
+  const prompt =
+    (req.format ?? "prompt") === "structured"
+      ? ""
+      : formatRcaPrompt({
+          failure: req.failureScope,
+          scope,
+          causalCandidates,
+          firstHypothesis,
+          queries,
+          primarySymbol,
+        });
+  return {
+    graphContext,
+    scope,
+    queries,
+    primarySymbol,
+    prompt,
+    notes,
+    causalCandidates,
+    firstHypothesis,
+  };
 }
