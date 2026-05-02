@@ -19,7 +19,7 @@
   isolation: isolate;
   color: #f5f5f5;
   display: grid;
-  grid-template-rows: 56px 48px 1fr 36px;
+  grid-template-rows: 48px 1fr 36px;  /* topbar lifted to AppShell in v0.4.4 */
   min-height: 0;
 }
 

@@ -78,29 +78,11 @@ export function ImpactView({ sessionId }: { sessionId: string }) {
     [response],
   );
 
+  // Wordmark + tabs + session HUD removed — the AppShell topbar (v0.4.3)
+  // owns those now. Keep this stage focused on Impact-unique controls.
+  void sessionMeta;
   return (
     <div className="impact-stage">
-      {/* Topbar — Halo wordmark + tabs + session HUD (matches Graph view). */}
-      <div className="topbar">
-        <div className="brand-halo">Halo<span className="dot" /></div>
-        <div className="tabs">
-          <span>Graph</span>
-          <span>RCA</span>
-          <span className="active">Impact</span>
-        </div>
-        <div className="session">
-          {sessionMeta ? (
-            <>
-              Session <strong>{sessionMeta.id}</strong> · {sessionMeta.fileCount} files
-              {" · "}
-              {sessionMeta.symbolCount} symbols · {sessionMeta.edgeCount} edges
-            </>
-          ) : (
-            <>Session <strong>{sessionId}</strong></>
-          )}
-        </div>
-      </div>
-
       {/* Control bar — seed + symbol picker + depth + run + stats. */}
       <div className="controls">
         <div className="seed">

@@ -435,16 +435,14 @@ interface TopBarProps {
 }
 
 function TopBar(props: TopBarProps) {
-  const { nodeCount, edgeCount, fileCount, symbolCount, sessionId, search, onSearch, onSubmit, searchRef } = props;
+  // v0.4.4: wordmark + session-info lifted to the AppShell. This sub-bar is
+  // now Graph-unique controls only (search box + nodes-shown counter).
+  // sessionId / fileCount / symbolCount kept on the prop type for backward
+  // compat — referenced via void to silence the unused-arg lint.
+  const { nodeCount, edgeCount, sessionId, fileCount, symbolCount, search, onSearch, onSubmit, searchRef } = props;
+  void sessionId; void fileCount; void symbolCount;
   return (
     <header className="constellation-topbar flex shrink-0 items-center gap-3 px-4 py-2 text-sm">
-      <div className="brand-halo">Halo<span className="dot" /></div>
-      <div className="session-info">
-        <span>session · <strong>{sessionId}</strong></span>
-        <span>{fileCount} files</span>
-        <span>{symbolCount} symbols</span>
-        <span>{edgeCount} edges</span>
-      </div>
       <div className="mx-auto flex items-center gap-2">
         <input
           ref={searchRef}
