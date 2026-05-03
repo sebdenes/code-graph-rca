@@ -449,7 +449,7 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
     "cgrca_rcaWithReasoning",
     {
       description:
-        "v0.5 Phase 2/3: free-text RCA with body previews + 1-hop neighbors per candidate, returned as a single structured prompt + JSON output schema. The HOST LLM (you, Claude) reasons over the candidate set inline and emits a verdict — no external API call, no API key needed. Pair with prose / partial-trace failure descriptions where cgrca_rca returns 0 candidates today. Output is the prompt; you respond with the verdict JSON the schema describes.",
+        "v0.5 Phase 2/3: free-text RCA with body previews + 1-hop neighbors per candidate, returned as a single structured prompt + JSON output schema. The HOST LLM (you) reasons over the candidate set inline and emits a verdict — no external API call, no API key needed. Pair with prose / partial-trace failure descriptions where cgrca_rca returns 0 candidates today. Output is the prompt; you respond with the verdict JSON the schema describes.",
       inputSchema: {
         failure: z
           .string()

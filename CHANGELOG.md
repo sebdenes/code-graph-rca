@@ -39,8 +39,7 @@ retriever's candidates with cgrca's structural signals.
   against an embedding-style retriever on a labelled corpus. Honest
   measurement infrastructure ships with the feature. (PR #31)
 - **MCP tool `cgrca_rcaWithReasoning`** — returns the LLM-ready
-  prompt as a single text block; the host LLM (Claude in Claude Code,
-  etc.) reasons over it inline. **No API key required.** (PR #32)
+  prompt as a single text block; the host LLM reasons over it inline. **No API key required.** (PR #32)
 
 ### Eval results (8-bug Python corpus, 2026-05-03)
 
