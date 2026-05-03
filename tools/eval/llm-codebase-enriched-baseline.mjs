@@ -196,53 +196,54 @@ async function enrichCandidates(repoRoot, ranked) {
 	const here = dirname(fileURLToPath(import.meta.url));
 	const distRoot = join(here, '..', '..', 'packages', 'core', 'dist');
 	const { indexScope } = await import(pathToFileURL(join(distRoot, 'graph', 'orchestrator.js')).href);
-	const { definitionOf, callersOf, calleesOf, recentlyChangedNear, symbolsInFile } =
-		await import(pathToFileURL(join(distRoot, 'graph', 'queries.js')).href);
-	const { fetchBody } = await import(pathToFileURL(join(distRoot, 'rca', 'llm', 'body.js')).href);
+	const { symbolsInFile } = await import(pathToFileURL(join(distRoot, 'graph', 'queries.js')).href);
 
 	const filePaths = ranked.map((r) => r.file.relPath);
 	const indexed = await indexScope({ repoRoot, scope: filePaths, maxFiles: filePaths.length + 50 });
 	try {
 		const enriched = [];
 		for (const r of ranked) {
-			const syms = symbolsInFile(indexed.db, r.file.relPath) ?? [];
-			// Pick the largest function/method/class in the file as the
-			// representative symbol (heuristic: the central abstraction).
-			const eligible = syms.filter((s) =>
-				s.kind === 'function' || s.kind === 'method' || s.kind === 'class' || s.kind === 'const',
-			);
-			if (eligible.length === 0) {
-				enriched.push({ file: r.file.relPath, score: r.score, overlap: r.overlap, symbol: null, body: null, callers: [], callees: [], recent: [] });
-				continue;
-			}
-			eligible.sort((a, b) => (b.endLine - b.startLine) - (a.endLine - a.startLine));
-			const sym = eligible[0];
-			const defs = definitionOf(indexed.db, sym.name);
-			const def = defs.find((d) => d.file === r.file.relPath) ?? defs[0];
-			const body = def
-				? fetchBody(repoRoot, def.file, def.startLine, def.endLine, LINES_PER_FILE)
-				: null;
-			const callerTree = callersOf(indexed.db, sym.name, { depth: 1, minConfidence: 0.5 });
-			const calleeTree = calleesOf(indexed.db, sym.name, { depth: 1 });
+			// File-level enrichment ONLY — no symbol-picking. Iter 1's
+			// "largest function" heuristic poisoned the LLM's pick on
+			// 3 bugs (events-503, pr25-await, postmortem) by showing
+			// callers/callees of the WRONG symbol. Lesson: don't pre-pick;
+			// give the LLM the whole file's symbol list and let it choose.
+			const syms = (symbolsInFile(indexed.db, r.file.relPath) ?? [])
+				.filter((s) =>
+					s.kind === 'function' || s.kind === 'method' ||
+					s.kind === 'class' || s.kind === 'const' ||
+					s.kind === 'interface' || s.kind === 'type' || s.kind === 'enum',
+				)
+				.map((s) => ({ name: s.name, kind: s.kind, startLine: s.startLine, endLine: s.endLine }))
+				.sort((a, b) => a.startLine - b.startLine);
+
+			// Recent commits at the FILE level (not per-symbol). cgrca's
+			// recentlyChangedNear is symbol-scoped; for file-level we shell
+			// out to git log directly. Cheap, no daemon, gives provenance.
 			let recent = [];
 			try {
-				recent = (recentlyChangedNear(indexed.db, sym.name, { repoRoot, sinceDays: 90 }) ?? []).slice(0, 3);
+				const { spawnSync } = await import('node:child_process');
+				const r2 = spawnSync(
+					'git',
+					['log', '--no-merges', '-n', '5', '--pretty=format:%h\t%ad\t%an\t%s', '--date=short', '--', r.file.relPath],
+					{ cwd: repoRoot, encoding: 'utf8', timeout: 5000 },
+				);
+				if (r2.status === 0 && r2.stdout) {
+					recent = r2.stdout.trim().split('\n').filter(Boolean).map((line) => {
+						const [commit, date, author, ...rest] = line.split('\t');
+						return { commit, date, author, subject: rest.join('\t') };
+					});
+				}
 			} catch {}
+
 			enriched.push({
 				file: r.file.relPath,
 				score: r.score,
 				overlap: r.overlap,
-				symbol: sym.name,
-				kind: sym.kind,
-				startLine: sym.startLine,
-				endLine: sym.endLine,
-				body: body ? body.body : null,
-				bodyLanguage: body ? body.language : r.file.language,
-				callers: (callerTree?.callers ?? []).slice(0, 3).map((n) => ({ name: n.name, file: n.file, line: n.line })),
-				callees: (calleeTree?.callees ?? []).slice(0, 3)
-					.filter((n) => n.file !== null && n.line !== null)
-					.map((n) => ({ name: n.name, file: n.file, line: n.line })),
-				recent: recent.map((c) => ({ commit: c.commit, date: c.date, subject: c.subject, author: c.author })),
+				language: r.file.language,
+				symbols: syms.slice(0, 30),  // cap to keep prompt size bounded
+				symbolCount: syms.length,
+				recent,
 			});
 		}
 		return enriched;
@@ -327,14 +328,14 @@ function costUsd(model, inT, outT) {
 // Prompt
 // ---------------------------------------------------------------------------
 
-const SYSTEM = `You are an RCA assistant. You will receive (a) a failure description, (b) a ranked list of candidate files retrieved by full-text search, and (c) for each candidate, structural facts from a code knowledge graph: the central symbol, its body, its 1-hop callers/callees, and recent commits touching it.
+const SYSTEM = `You are an RCA assistant. You will receive (a) a failure description, (b) a ranked list of candidate files retrieved by full-text search, and (c) for each file, two structural facts from a code knowledge graph: the list of every function/method/class defined in the file (with line ranges) and the last 5 commits touching the file.
 
-Use both the content (BM25 ranking + body snippets) AND the structural facts (callers / callees / recent commits) to pick the single most likely root cause. The structural facts are ground truth from AST + git, not approximate from embeddings — weight them when a candidate has been recently modified, has many callers near the failure surface, or sits on the call path between named symbols in the failure.
+Use the file content (path + body snippet) to find the right file, then use the symbol list to pick a specific line/symbol within it, and use the recent-commit history to weight files that were recently modified in the same neighborhood as the failure.
 
 Rules:
 - Pick from the candidate set. Do NOT invent file paths not in the list.
+- The line/symbol you return MUST appear in the candidate's symbol list (or be visible in the body snippet).
 - If no candidate is plausible, set rootCause to null and explain in reasoning.
-- Be specific: hypothesis must reference both the structural evidence (e.g. "modified 3 days ago in commit X, caller of Y") AND the symptom.
 - Confidence is honest: 0.9 = very sure, 0.5 = best guess, 0.2 = grasping at straws. Don't anchor at 0.7.`;
 
 function renderUserPrompt(failure, enriched) {
@@ -342,30 +343,31 @@ function renderUserPrompt(failure, enriched) {
 	parts.push('## Failure');
 	parts.push(failure.trim());
 	parts.push('');
-	parts.push('## Candidates (BM25 retrieval + cgrca structural enrichment)');
+	parts.push('## Candidates (BM25 retrieval + cgrca file-level structural facts)');
 	for (let i = 0; i < enriched.length; i++) {
 		const c = enriched[i];
 		parts.push('');
 		parts.push(`### Candidate ${i + 1}: ${c.file}  (BM25 overlap=${c.overlap}, score=${c.score.toFixed(2)})`);
-		if (c.symbol) {
-			parts.push(`Central symbol: \`${c.symbol}\` (${c.kind ?? '?'}, lines ${c.startLine}-${c.endLine})`);
-		}
-		if (c.callers && c.callers.length > 0) {
-			parts.push(`Callers: ${c.callers.map((n) => `${n.name} (${n.file}:${n.line})`).join(', ')}`);
-		}
-		if (c.callees && c.callees.length > 0) {
-			parts.push(`Callees: ${c.callees.map((n) => `${n.name} (${n.file}:${n.line})`).join(', ')}`);
+		if (c.symbols && c.symbols.length > 0) {
+			const symStr = c.symbols.map((s) => `${s.name} (${s.kind} @ L${s.startLine}-${s.endLine})`).join(', ');
+			const more = c.symbolCount > c.symbols.length ? ` … +${c.symbolCount - c.symbols.length} more` : '';
+			parts.push(`Symbols in this file: ${symStr}${more}`);
 		}
 		if (c.recent && c.recent.length > 0) {
-			parts.push(`Recent commits touching this symbol:`);
+			parts.push(`Recent commits touching this file:`);
 			for (const r of c.recent) {
-				parts.push(`  - ${r.commit.slice(0, 8)} ${r.date} (${r.author}): ${r.subject}`);
+				parts.push(`  - ${r.commit} ${r.date} (${r.author}): ${r.subject}`);
 			}
 		}
-		if (c.body) {
-			parts.push('Body:');
-			parts.push('```' + (c.bodyLanguage ?? ''));
-			parts.push(c.body);
+		// File body snippet (same shape llm-codebase shows — first N lines)
+		let body = '';
+		try {
+			body = readFileSync(join(REPO_ABS, c.file), 'utf8').split('\n').slice(0, LINES_PER_FILE).join('\n');
+		} catch {}
+		if (body) {
+			parts.push('Body (first ' + LINES_PER_FILE + ' lines):');
+			parts.push('```' + (c.language ?? ''));
+			parts.push(body);
 			parts.push('```');
 		}
 	}
@@ -377,12 +379,12 @@ function renderUserPrompt(failure, enriched) {
   "rootCause": {
     "file": "<path relative to repo root>",
     "line": <int>,
-    "symbol": "<name>",
-    "hypothesis": "<≤3 sentences citing both structural and symptom evidence>",
+    "symbol": "<name from the symbol list>",
+    "hypothesis": "<≤3 sentences>",
     "confidence": <0..1>
   } | null,
   "alternatives": [{ "file": "...", "line": 0, "symbol": "...", "why": "..." }],
-  "reasoning": "<1-2 sentences on which structural facts tipped the call>"
+  "reasoning": "<1-2 sentences>"
 }`);
 	parts.push('```');
 	return parts.join('\n');
