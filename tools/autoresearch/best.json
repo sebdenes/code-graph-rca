@@ -1,11 +1,11 @@
 {
-  "_comment": "Updated by the autoresearch agent after each kept experiment. Initial state = v0.5.0 baseline metrics on the 9-bug corpus. Only text-mode metrics are tracked here — those are the only ones autoresearch can move (llm + llm-codebase don't read scoring-config).",
+  "_comment": "baseline on the 29-issue corpus (74 atomic actions filtered to 29 with named fix files). cgrca loses to grep 2:1 \u2014 postmortem prose describes behavior, not code symbols.",
   "metrics": {
-    "text_top1": 0.444,
-    "text_top5": 0.667,
-    "text_mrr": 0.548
+    "text_top1": 0.103,
+    "text_top5": 0.241,
+    "text_mrr": 0.148
   },
   "experiment_id": 0,
-  "timestamp": "2026-05-03T00:00:00Z",
+  "timestamp": "2026-05-03T12:18:04.962891+00:00",
   "config_path": "tools/calibration/scoring-config.json"
 }

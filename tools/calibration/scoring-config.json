@@ -7,7 +7,7 @@
     "body_content_weight": 0.3,
     "import_match_weight": 0.5,
     "subwords_per_token_ceiling": 3,
-    "substring_name_min_length": 4,
+    "substring_name_min_length": 3,
     "substring_name_min_symbol_length": 5,
     "substring_name_per_token_cap": 100,
     "signature_substring_min_length": 5,
