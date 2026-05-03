@@ -44,10 +44,24 @@ cgrca daemon start                 # warm queries, ~500x faster on the second hi
 **CLI.** Direct invocation, scripting, CI. The default output is a colored ranked table; `--format prompt` emits the full LLM-grounding markdown, `--format json` emits structured data for tool consumers.
 
 ```sh
+# Structured shape: symbol / file / test / stack-trace path
 cgrca rca symbol:login --repo /path/to/repo
+
+# Free-text — prose, intent, partial trace (v0.5+)
+cgrca rca "cyclists silently get marathon plans" --repo /path/to/repo
+
+# LLM re-rank — zero-config fallback for users without their own retriever.
+# (Opt-in; needs ANTHROPIC_API_KEY or OPENAI_API_KEY.)
+cgrca rca "cyclists silently get marathon plans" --llm --model claude-sonnet-4-6
 ```
 
-**MCP server.** Stdio transport, nine tools any MCP-aware agent picks up. You usually don't run this directly — `cgrca init` registers it with every editor it finds and drops an `AGENTS.md` at the repo root teaching the agent when to call which tool.
+> **Honest positioning (v0.5):** for free-text RCA, embedding-based retrievers like Cursor's `@codebase` are at parity or better on raw retrieval. cgrca's value is in the **structural signals** — call graph, git history, calibrated rank — that embedding tools fundamentally can't have. Use cgrca alongside your existing retriever, not as a replacement for it. The `--llm` flow ships as a zero-config fallback; the long-term value is in the MCP tools below.
+
+**MCP server.** Stdio transport, ten tools any MCP-aware agent picks up. You usually don't run this directly — `cgrca init` registers it with every editor it finds and drops an `AGENTS.md` at the repo root teaching the agent when to call which tool.
+
+The structural-signal tools — `callersOf`, `calleesOf`, `pathBetween`, `recentlyChangedNear`, `definitionOf`, `symbolsInFile` — are the actual product. Wrap them around any retriever's output and you get *"this function changed 2 days ago, is called from 47 places, co-changes with the failing test"* — facts no embedding similarity score can give you.
+
+New in v0.5: `cgrca_rcaWithReasoning` returns the LLM-ready prompt for the host LLM (Claude in Claude Code, etc.) to reason over inline — no API key required.
 
 ```sh
 cgrca mcp /path/to/repo
