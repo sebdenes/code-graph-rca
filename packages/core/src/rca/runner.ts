@@ -18,6 +18,7 @@ import type {
   SymbolKind,
 } from "../types.js";
 import { languageOf, walk } from "../graph/walker.js";
+import { getScoringConfig } from "../config/scoring-config.js";
 import { buildGraphContext } from "./context.js";
 import { formatRcaPrompt } from "./prompt.js";
 import {
@@ -125,7 +126,7 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
   const indexed = await indexScope({
     repoRoot: req.repoRoot,
     scope: scopeResult.files,
-    maxFiles: req.budget?.maxFiles ?? 200,
+    maxFiles: req.budget?.maxFiles ?? getScoringConfig().retrieval.default_max_files,
     ...(req.persist ? { persist: req.persist } : {}),
   });
 
@@ -255,20 +256,27 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
     // its candidates with the merged multi-anchor result so the table
     // surfaces every symbol in the file ranked by the existing 7 signals.
     if (req.failureScope.kind === "file" && firstSeed) {
-      const fileSeeds = symbolsInFile(indexed.db, firstSeed)
-        .filter(
-          (s) =>
-            s.kind === "function" ||
-            s.kind === "method" ||
-            s.kind === "class" ||
-            s.kind === "const" ||
-            s.kind === "interface" ||
-            s.kind === "type" ||
-            s.kind === "enum",
-        )
-        .map((s) => ({ name: s.name, file: firstSeed, line: s.startLine }));
+      // v0.8: include symbols from ALL seeds (original + cochange-expanded)
+      // so the multi-anchor walk surfaces candidates from each. Without
+      // this, cochange-added files enter scope but never reach the
+      // candidate ranking — exactly the bug v0.8 was built to fix.
+      const allSeedFiles = scopeResult.seeds;
+      const fileSeeds = allSeedFiles.flatMap((sf) =>
+        symbolsInFile(indexed.db, sf)
+          .filter(
+            (s) =>
+              s.kind === "function" ||
+              s.kind === "method" ||
+              s.kind === "class" ||
+              s.kind === "const" ||
+              s.kind === "interface" ||
+              s.kind === "type" ||
+              s.kind === "enum",
+          )
+          .map((s) => ({ name: s.name, file: sf, line: s.startLine })),
+      );
       if (fileSeeds.length === 0) {
-        notes.push(`no indexed symbols in ${firstSeed}`);
+        notes.push(`no indexed symbols in seeds (${allSeedFiles.length} seed file(s))`);
       } else {
         const merged = await runMultiAnchor({
           db: indexed.db,
@@ -542,7 +550,7 @@ async function runFreeTextRca(
   // don't reuse resolveScope for this — that walker is import-graph
   // expansion from a known seed, which we don't have. We just want a
   // shallow file list to feed indexScope.
-  const maxFiles = req.budget?.maxFiles ?? 200;
+  const maxFiles = req.budget?.maxFiles ?? getScoringConfig().retrieval.default_max_files;
   const broadFiles = collectBroadScope(req.repoRoot, maxFiles);
   if (broadFiles.length === 0) {
     notes.push("free-text: no parseable files in repo root");
@@ -571,8 +579,13 @@ async function runFreeTextRca(
       result: matches.slice(0, 16),
     });
 
-    // Top-K (default 8) token matches → anchor seeds for the chain walker.
-    const seeds: MultiAnchorSeed[] = matches.slice(0, 8).map((m) => ({
+    // v0.7: seed cap, default top-N, and matcher-tail augmenter sourced
+    // from scoring-config.json. The autoresearch loop tunes these.
+    const _retrievalCfg = getScoringConfig().retrieval;
+    const _augmenterCfg = getScoringConfig().augmenter;
+
+    // Top-K token matches → anchor seeds for the chain walker.
+    const seeds: MultiAnchorSeed[] = matches.slice(0, _retrievalCfg.free_text_seed_cap).map((m) => ({
       name: m.symbolName,
       file: m.file,
       line: m.line,
@@ -583,26 +596,19 @@ async function runFreeTextRca(
       db: indexed.db,
       repoRoot: req.repoRoot,
       seeds,
-      topN: req.topN ?? 5,
+      topN: req.topN ?? _retrievalCfg.default_top_n,
       ...(req.useLegacyWeights ? { useLegacyWeights: true } : {}),
     });
     if (merged.topAnchorName) primarySymbol = merged.topAnchorName;
 
     // Augment with matcher's substring-only candidates that didn't survive
-    // the multi-anchor walk. Without this, prose like "Events fetch failed
-    // ... retry on transient 5xx" produces 8 seeds all named "errors"
-    // (exact-match domination), graph walks expand from those, and
-    // substring-matched fix symbols (`fetch_planned_events`,
-    // `_retry_async`) — which ARE in the matcher's top-30 — are lost.
-    // Cap at topN extras so we don't pollute the ranking; score by
-    // matcher's totalScore lifted into the candidate scorer's range.
-    const targetN = req.topN ?? 5;
-    // Cap chosen empirically (the eval corpus 2026-05-03): a type-coercion bug's fix
-    // symbol `_parse_sport_setting_cp` lands at matcher rank ~37 (only the
-    // "sport" sub-word matches; everything else is more specific). 5x is
-    // wide enough to surface it without polluting the candidate set with
-    // noise — the LLM stage can pick from a wider menu.
-    const augmentedTopN = Math.max(targetN * 5, 25);
+    // the multi-anchor walk. Cap is `topN * multiplier` floored at the
+    // configured floor — ensures wider menus on small-topN configs.
+    const targetN = req.topN ?? _retrievalCfg.default_top_n;
+    const augmentedTopN = Math.max(
+      targetN * _augmenterCfg.matcher_tail_topn_multiplier,
+      _augmenterCfg.matcher_tail_floor,
+    );
     const augmented = augmentWithMatcherTail(
       indexed.db,
       merged.candidates,

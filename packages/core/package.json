@@ -1,6 +1,6 @@
 {
   "name": "code-graph-rca",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "description": "RCA infrastructure for AI-built code. Code knowledge graph + opinionated RCA engine, exposed via MCP (Cursor / Claude Code / Cody / Cline / Continue / Windsurf / Zed) plus CLI and library. RCA is the wedge; the same engine covers code review, refactor blast-radius, and grounding for any agent's structural claims.",
   "type": "module",
   "license": "MIT",

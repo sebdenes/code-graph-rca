@@ -1,6 +1,6 @@
 {
   "name": "code-graph-rca-monorepo",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Workspaces root for code-graph-rca and its UI.",
   "license": "MIT",

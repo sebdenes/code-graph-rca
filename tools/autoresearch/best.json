@@ -1,0 +1,11 @@
+{
+  "_comment": "baseline on the 29-issue corpus (74 atomic actions filtered to 29 with named fix files). cgrca loses to grep 2:1 \u2014 postmortem prose describes behavior, not code symbols.",
+  "metrics": {
+    "text_top1": 0.103,
+    "text_top5": 0.241,
+    "text_mrr": 0.148
+  },
+  "experiment_id": 0,
+  "timestamp": "2026-05-03T12:18:04.962891+00:00",
+  "config_path": "tools/calibration/scoring-config.json"
+}
