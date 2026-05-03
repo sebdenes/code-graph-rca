@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS symbols (
   -- hydration path). Without this, free-text RCA could only match prose
   -- tokens against symbol NAMES + signatures — losing every bug whose
   -- failure description references implementation-detail words that live
-  -- inside a function (e.g. "asterisks" in pr22-telegram-markdown matches
+  -- inside a function (e.g. "asterisks" in a markdown-sanitization bug matches
   -- `re.sub(r'[*_~`]', ...)` inside _strip_markdown's body but not its
   -- name or signature). NULL for kind='param'|'local'|'import' rows
   -- where there's no body to capture.

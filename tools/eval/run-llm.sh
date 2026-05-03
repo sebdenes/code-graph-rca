@@ -9,13 +9,13 @@
 # Requires ANTHROPIC_API_KEY (or set CGRCA_LLM_PROVIDER=openai + OPENAI_API_KEY).
 # Default model: claude-sonnet-4-6 (override with CGRCA_LLM_MODEL).
 #
-# Cost (8 athlai bugs, sonnet): ~$0.30 (llm $0.15 + llm-codebase ~$0.15).
+# Cost (8-bug Python corpus, sonnet): ~$0.30 (llm $0.15 + llm-codebase ~$0.15).
 set -e
 cd "$(dirname "$0")/../.."
 CGRCA_LLM_MODEL="${CGRCA_LLM_MODEL:-claude-sonnet-4-6}" \
   node tools/eval/run-eval.mjs \
-    --corpus tools/eval/corpus-athlai-fixed.jsonl \
-    --repo "${ATHLAI_REPO:-$HOME/Athlai-Antigravity/athlai}" \
+    --corpus tools/eval/corpus-eval-fixed.jsonl \
+    --repo "${TARGET_REPO:-$HOME/target-repo}" \
     --modes text,llm,llm-codebase,baseline-grep \
     --cgrca packages/core/dist/cli.js \
     --top-n 10 \
