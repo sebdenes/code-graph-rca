@@ -1,0 +1,45 @@
+{
+  "_comment": "v0.7 autoresearch surface. Every weight + threshold the cgrca scorer/matcher uses, in one file. Edit values; rebuild; run eval; keep if metric improved. See docs/v0.7-plan.md for the full loop. Default values match what was hardcoded as of v0.5.0 \u2014 leaving them untouched reproduces v0.5.0 behavior exactly.",
+  "matcher": {
+    "name_match_weight": 3.0,
+    "subname_match_weight": 1.0,
+    "signature_match_weight": 2.0,
+    "body_content_weight": 0.3,
+    "import_match_weight": 0.5,
+    "subwords_per_token_ceiling": 3,
+    "substring_name_min_length": 3,
+    "substring_name_min_symbol_length": 5,
+    "substring_name_per_token_cap": 100,
+    "signature_substring_min_length": 5,
+    "body_content_min_length": 8
+  },
+  "scorer": {
+    "calibrated_weights": {
+      "recency": 0.0766,
+      "proximity": 0.0,
+      "ambiguity": 0.2133,
+      "coChange": 0.4744,
+      "subsystem": 0.8909,
+      "complexity": 0.1679,
+      "dataflow": 0.0
+    },
+    "legacy_weights": {
+      "recency": 1.0,
+      "proximity": 1.0,
+      "ambiguity": 1.0,
+      "coChange": 1.0,
+      "subsystem": 1.0,
+      "complexity": 1.0,
+      "dataflow": 1.0
+    }
+  },
+  "augmenter": {
+    "matcher_tail_topn_multiplier": 5,
+    "matcher_tail_floor": 25
+  },
+  "retrieval": {
+    "default_max_files": 200,
+    "default_top_n": 5,
+    "free_text_seed_cap": 8
+  }
+}
