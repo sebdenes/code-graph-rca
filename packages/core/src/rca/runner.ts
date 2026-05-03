@@ -597,7 +597,12 @@ async function runFreeTextRca(
     // Cap at topN extras so we don't pollute the ranking; score by
     // matcher's totalScore lifted into the candidate scorer's range.
     const targetN = req.topN ?? 5;
-    const augmentedTopN = Math.max(targetN * 2, 10);
+    // Cap chosen empirically (athlai 2026-05-03): pr23-cp-type-conv's fix
+    // symbol `_parse_sport_setting_cp` lands at matcher rank ~37 (only the
+    // "sport" sub-word matches; everything else is more specific). 5x is
+    // wide enough to surface it without polluting the candidate set with
+    // noise — the LLM stage can pick from a wider menu.
+    const augmentedTopN = Math.max(targetN * 5, 25);
     const augmented = augmentWithMatcherTail(
       indexed.db,
       merged.candidates,

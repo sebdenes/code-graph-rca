@@ -214,7 +214,10 @@ export function matchTokensAgainstKg(
     nameSet: Set<string>;
     /** Sub-word substring hits against s.name (camelCase ↔ snake_case bridge). */
     subnameSet: Set<string>;
+    /** Token hits against s.signature (literals + identifier sub-words ≥5 chars). */
     bodySet: Set<string>;
+    /** v7: token hits against s.body_preview (identifier sub-words ≥6 chars only). */
+    bodyContentSet: Set<string>;
     importSet: Set<string>;
   }
   const acc = new Map<number, Acc>();
@@ -233,6 +236,7 @@ export function matchTokensAgainstKg(
         nameSet: new Set<string>(),
         subnameSet: new Set<string>(),
         bodySet: new Set<string>(),
+        bodyContentSet: new Set<string>(),
         importSet: new Set<string>(),
       };
       acc.set(id, a);
@@ -273,11 +277,17 @@ export function matchTokensAgainstKg(
   //     Bound runaway: cap rows per substring to 100. Symbols with name
   //     length >= 5 are eligible (so `i` doesn't hit `i_path`).
   const subNameStmt = db.prepare(
+    // ORDER BY length(name) DESC — longer names are more specific signal.
+    // Without this, a sub-word like "sport" matching 200+ symbols (athlai
+    // 2026-05-03) returns the first-100-by-id and drops specific candidates
+    // like `_parse_sport_setting_cp` (22 chars, in late-walked file)
+    // entirely. The pr23-cp-type-conv miss traced directly to this LIMIT.
     `SELECT s.id AS id, s.name AS name, f.path AS path, s.start_line AS start_line
        FROM symbols s
        JOIN files f ON f.id = s.file_id
       WHERE LOWER(s.name) LIKE ? ESCAPE '\\'
         AND length(s.name) >= 5
+      ORDER BY length(s.name) DESC
       LIMIT 100`,
   );
   const seenSubName = new Set<string>();
@@ -300,9 +310,11 @@ export function matchTokensAgainstKg(
     tryNameSubstring(tok.toLowerCase());
   }
 
-  // 2a. LITERAL → SIGNATURE: the original Phase 1 path. High precision
-  //     payloads like `"marathon"` land in default-value signatures.
-  const bodyStmt = db.prepare(
+  // 2a. LITERAL → SIGNATURE only (high precision). Literals like `"marathon"`
+  //     in default-value signatures are strong signal. We DON'T search
+  //     body_preview for literals here because short literals like `"10k"`
+  //     or `"v2"` blow up to thousands of body hits with terrible precision.
+  const sigStmt = db.prepare(
     `SELECT s.id AS id, s.name AS name, f.path AS path, s.start_line AS start_line
        FROM symbols s
        JOIN files f ON f.id = s.file_id
@@ -310,17 +322,15 @@ export function matchTokensAgainstKg(
   );
   for (const tok of tokens.literalTokens) {
     const escaped = tok.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-    const rows = bodyStmt.all(`%${escaped}%`) as SymRow[];
+    const rows = sigStmt.all(`%${escaped}%`) as SymRow[];
     for (const r of rows) {
       const a = ensure(r.id, r.name, r.path, r.start_line);
       a.bodySet.add(tok);
     }
   }
 
-  // 2b. IDENTIFIER SUB-WORD → SIGNATURE: identifiers from the prose often
-  //     appear in type hints / default values inside the signature. e.g.
-  //     a desc mentioning "fetch" surfaces functions whose signature
-  //     contains `fetch_planned_events(...)`. Length >= 5 to avoid noise.
+  // 2b. IDENTIFIER SUB-WORD → SIGNATURE: identifiers often appear in type
+  //     hints / default values. Length >= 5 to avoid noise.
   const seenSigSub = new Set<string>();
   const trySignatureSubstring = (sub: string, originalTok: string): void => {
     if (sub.length < 5) return;
@@ -328,7 +338,7 @@ export function matchTokensAgainstKg(
     if (seenSigSub.has(key)) return;
     seenSigSub.add(key);
     const escaped = sub.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-    const rows = bodyStmt.all(`%${escaped}%`) as SymRow[];
+    const rows = sigStmt.all(`%${escaped}%`) as SymRow[];
     for (const r of rows) {
       const a = ensure(r.id, r.name, r.path, r.start_line);
       a.bodySet.add(originalTok);
@@ -337,6 +347,45 @@ export function matchTokensAgainstKg(
   for (const tok of tokens.identifierTokens) {
     if (tok.length >= 5) trySignatureSubstring(tok.toLowerCase(), tok);
     for (const sub of splitCompound(tok)) trySignatureSubstring(sub, tok);
+  }
+
+  // 2c. v7: BODY-CONTENT match. Search prose tokens against function bodies
+  //     (the first ~30 lines captured at index time as `body_preview`).
+  //     Lower weight than name/signature: body matches are recall sugar for
+  //     cases where the failure description references implementation-detail
+  //     words (e.g. "asterisks" in pr22 maps to `re.sub(r'[*_~`]', ...)` in
+  //     `_strip_markdown`'s body but NOT its name or signature).
+  //
+  //     **Length guard tuned empirically (athlai 2026-05-03)**: only tokens
+  //     of length >= 8 search the body. Shorter tokens ("error", "fetch",
+  //     "events", "marathon", "scheduler") are common enough in code bodies
+  //     that they displace real top-1s (cyclist + events + compliance all
+  //     dropped to miss when length>=6 was used at weight=0.6). Length >= 8
+  //     leaves only "asterisks", "Markdown", "transient", "telegram"-class
+  //     tokens — specific enough to stay precision-positive.
+  const bodyContentStmt = db.prepare(
+    `SELECT s.id AS id, s.name AS name, f.path AS path, s.start_line AS start_line
+       FROM symbols s
+       JOIN files f ON f.id = s.file_id
+      WHERE s.body_preview LIKE ? ESCAPE '\\'
+        AND s.body_preview IS NOT NULL`,
+  );
+  const seenBodySub = new Set<string>();
+  const tryBodyContent = (sub: string, originalTok: string): void => {
+    if (sub.length < 8) return;
+    const key = sub + "\0" + originalTok;
+    if (seenBodySub.has(key)) return;
+    seenBodySub.add(key);
+    const escaped = sub.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const rows = bodyContentStmt.all(`%${escaped}%`) as SymRow[];
+    for (const r of rows) {
+      const a = ensure(r.id, r.name, r.path, r.start_line);
+      a.bodyContentSet.add(originalTok);
+    }
+  };
+  for (const tok of tokens.identifierTokens) {
+    if (tok.length >= 8) tryBodyContent(tok.toLowerCase(), tok);
+    for (const sub of splitCompound(tok)) tryBodyContent(sub, tok);
   }
 
   // 3. IMPORT-MATCH: imports.local_name = ?. We promote every symbol in
@@ -377,13 +426,18 @@ export function matchTokensAgainstKg(
     }
   }
 
-  // Score + normalize. Weights tuned so exact name match (3.0) still
-  // dominates substring (1.0) and body (2.0) when both fire — substring is
-  // recall sugar that lifts the floor for camelCase ↔ snake_case bridges
-  // but shouldn't outrank a true name match.
+  // Score + normalize. Weight ordering:
+  //   exact name (3.0) > signature (2.0) > substring name (1.0) >
+  //   body content (0.6) > import (0.5)
+  // Body-content weight is intentionally below substring-name: it's recall
+  // sugar that surfaces "asterisks" → `_strip_markdown` (pr22), but body
+  // tokens are inherently noisier than name tokens — many functions have
+  // bodies that mention common words. Lower weight prevents body matches
+  // from displacing real name/signature hits.
   const NAME_W = 3.0;
   const SUBNAME_W = 1.0;
   const BODY_W = 2.0;
+  const BODY_CONTENT_W = 0.3;
   const IMPORT_W = 0.5;
   // Max ceiling: every identifier token AND every sub-word can fire on every
   // bucket. We cap sub-word count at 3 per token (typical decomposition) so
@@ -394,6 +448,7 @@ export function matchTokensAgainstKg(
     SUBNAME_W * tokens.identifierTokens.length * SUBWORDS_PER_TOK +
     BODY_W * tokens.literalTokens.length +
     BODY_W * tokens.identifierTokens.length +
+    BODY_CONTENT_W * tokens.identifierTokens.length +
     IMPORT_W * tokens.identifierTokens.length;
 
   const out: TokenMatch[] = [];
@@ -401,11 +456,13 @@ export function matchTokensAgainstKg(
     const nameMatches = a.nameSet.size;
     const subnameMatches = a.subnameSet.size;
     const bodyMatches = a.bodySet.size;
+    const bodyContentMatches = a.bodyContentSet.size;
     const importMatches = a.importSet.size;
     const raw =
       NAME_W * nameMatches +
       SUBNAME_W * subnameMatches +
       BODY_W * bodyMatches +
+      BODY_CONTENT_W * bodyContentMatches +
       IMPORT_W * importMatches;
     const totalScore = maxRaw > 0 ? raw / maxRaw : 0;
     if (raw === 0) continue;
