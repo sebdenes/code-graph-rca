@@ -73,11 +73,11 @@ describe("openDb schema versioning", () => {
     }
   });
 
-  it("asserts current SCHEMA_VERSION is 6", () => {
-    expect(SCHEMA_VERSION).toBe(6);
+  it("asserts current SCHEMA_VERSION is 7", () => {
+    expect(SCHEMA_VERSION).toBe(7);
   });
 
-  it("rejects a v5 persisted DB so re-index is forced", () => {
+  it("rejects a v6 persisted DB so re-index is forced", () => {
     const { path, cleanup } = tmpDbPath();
     try {
       const seed = new Database(path);
@@ -85,12 +85,12 @@ describe("openDb schema versioning", () => {
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
       );
       seed
-        .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '5')")
+        .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '6')")
         .run();
       seed.close();
 
       expect(() => openDb({ persist: path })).toThrowError(
-        /has schema v5, this binary expects v6\. Re-index by deleting the file\./,
+        /has schema v6, this binary expects v7\. Re-index by deleting the file\./,
       );
     } finally {
       cleanup();

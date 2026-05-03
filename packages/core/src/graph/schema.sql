@@ -29,7 +29,17 @@ CREATE TABLE IF NOT EXISTS symbols (
   -- resolve.ts: when an unresolved `obj.method(...)` call has a receiver
   -- whose type_text matches a known class symbol, the call resolves to that
   -- class's method. NULL when unknown / not annotated.
-  type_text TEXT
+  type_text TEXT,
+  -- v7: first ~30 lines of the symbol's body, captured at parse time.
+  -- Powers prose-against-body matching in textmode.ts (and the LLM
+  -- hydration path). Without this, free-text RCA could only match prose
+  -- tokens against symbol NAMES + signatures — losing every bug whose
+  -- failure description references implementation-detail words that live
+  -- inside a function (e.g. "asterisks" in pr22-telegram-markdown matches
+  -- `re.sub(r'[*_~`]', ...)` inside _strip_markdown's body but not its
+  -- name or signature). NULL for kind='param'|'local'|'import' rows
+  -- where there's no body to capture.
+  body_preview TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);

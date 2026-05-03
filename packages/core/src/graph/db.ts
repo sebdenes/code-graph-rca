@@ -29,8 +29,14 @@ const SCHEMA_PATH = join(here, "schema.sql");
  *   resolve.ts can do light-touch receiver-type inference: an
  *   `obj.method(...)` call whose receiver `obj` is a local/param of a
  *   known class type now resolves to that class's method.
+ * - v7: adds `symbols.body_preview` column. Stores the first ~30 lines
+ *   of each function/method/class body captured at parse time, so
+ *   textmode's prose-against-body matcher can find symbols whose bodies
+ *   reference failure-description tokens that don't appear in the name
+ *   or signature. Closes the v0.5 Phase 4 gap to @codebase-style
+ *   retrieval (which reads file content directly).
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export type Db = Database.Database;
 

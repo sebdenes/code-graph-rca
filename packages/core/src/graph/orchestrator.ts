@@ -161,12 +161,39 @@ export async function indexScope(opts: IndexOptions): Promise<IndexResult> {
   return { db, fileCount, symbolCount, edgeCount, importCount, unparsedCount };
 }
 
+/**
+ * Body-preview line cap. We capture the first ~30 lines of each
+ * function/class body for textmode's prose-against-body matcher.
+ * Larger preview = better recall on long-bodied functions but bigger
+ * DB. 30 was picked as the same cap the LLM-rerank prompt builder uses
+ * for body snippets — keeps the matcher's index size in line with what
+ * the LLM stage actually sees.
+ */
+const BODY_PREVIEW_MAX_LINES = 30;
+
+function sliceBodyPreview(
+  source: string | null,
+  startLine: number,
+  endLine: number,
+): string | null {
+  if (!source) return null;
+  if (startLine <= 0 || endLine < startLine) return null;
+  const lines = source.split(/\r?\n/);
+  const lo = Math.max(1, Math.min(startLine, lines.length));
+  const hi = Math.min(lo + BODY_PREVIEW_MAX_LINES - 1, endLine, lines.length);
+  if (hi < lo) return null;
+  const slice = lines.slice(lo - 1, hi).join("\n").trim();
+  // Empty / whitespace-only slice carries no signal — store NULL so the
+  // matcher's `WHERE body_preview IS NOT NULL` short-circuit is honest.
+  return slice.length > 0 ? slice : null;
+}
+
 function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void {
   const insertFile = db.prepare(
     "INSERT INTO files (path, language, subsystem, loc) VALUES (?, ?, ?, ?)",
   );
   const insertSymbol = db.prepare(
-    "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported, type_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported, type_text, body_preview) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   );
   const insertEdge = db.prepare(
     "INSERT INTO edges (from_symbol_id, to_symbol_id, to_name, kind, confidence, call_line) VALUES (?, NULL, ?, ?, ?, ?)",
@@ -186,7 +213,7 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
   // self-index. start_line/end_line copy the function's range so recency
   // hydration for a param degrades into the enclosing function.
   const insertParamSymbol = db.prepare(
-    "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported, type_text) VALUES (?, ?, 'param', ?, ?, ?, NULL, 0, ?)",
+    "INSERT INTO symbols (file_id, name, kind, parent_id, start_line, end_line, signature, exported, type_text, body_preview) VALUES (?, ?, 'param', ?, ?, ?, NULL, 0, ?, NULL)",
   );
   const insertArgBinding = db.prepare(
     "INSERT INTO arg_bindings (edge_id, position, source_kind, source_text, source_symbol_id) VALUES (?, ?, ?, ?, NULL)",
@@ -197,6 +224,11 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
       const subsystem = subsystemOf(repoRoot, f.path);
       const fileRes = insertFile.run(f.path, f.language, subsystem, f.loc);
       const fileId = fileRes.lastInsertRowid as number;
+
+      // Read the source ONCE per file for body_preview slicing. Cheap —
+      // tree-sitter already read this in the previous pass; re-reading is
+      // ~10ms for typical files vs. plumbing the source through ExtractedFile.
+      const source = safeRead(join(repoRoot, f.path));
 
       // Insert classes first so methods can reference parent_id.
       const symbolIdsByKey = new Map<string, number>();
@@ -214,6 +246,8 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
           // Classes/interfaces don't carry type annotations themselves —
           // type_text is meaningful only on params/locals.
           null,
+          // v7: class/interface body preview (the class block, capped).
+          sliceBodyPreview(source, s.startLine, s.endLine),
         );
         symbolIdsByKey.set(`${s.kind}:${s.name}`, res.lastInsertRowid as number);
       }
@@ -223,6 +257,16 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
         if (s.parentName) {
           parentId = symbolIdsByKey.get(`class:${s.parentName}`) ?? null;
         }
+        // v7: capture body_preview only for symbols with a real body span:
+        // function/method/const top-level definitions. Locals have ranges
+        // but their body is rarely useful to grep against; skip to keep the
+        // matcher's index lean.
+        const wantsBody =
+          s.kind === "function" ||
+          s.kind === "method" ||
+          s.kind === "const" ||
+          s.kind === "type" ||
+          s.kind === "enum";
         const res = insertSymbol.run(
           fileId,
           s.name,
@@ -234,6 +278,7 @@ function insertExtracted(db: Db, repoRoot: string, files: ExtractedFile[]): void
           s.exported ? 1 : 0,
           // Locals carry their inline annotation; everything else is null.
           s.kind === "local" && s.typeText ? s.typeText : null,
+          wantsBody ? sliceBodyPreview(source, s.startLine, s.endLine) : null,
         );
         symbolIdsByKey.set(
           s.parentName ? `${s.kind}:${s.parentName}.${s.name}` : `${s.kind}:${s.name}`,
@@ -345,4 +390,3 @@ function countLoc(text: string): number {
   return n;
 }
 
-void join;
