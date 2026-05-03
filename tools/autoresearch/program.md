@@ -1,12 +1,21 @@
 # cgrca autoresearch program
 
-You are running an overnight autoresearch loop on cgrca's scoring config.
-Your goal: find values in `tools/calibration/scoring-config.json` that
-maximise top-1 on the labeled eval corpus, without regressing the other
-metrics.
+You are running an autoresearch loop on cgrca's scoring config from
+inside a Claude Code session. Your goal: find values in
+`tools/calibration/scoring-config.json` that maximise text-mode top-1 on
+the labeled eval corpus, without regressing the other metrics.
 
-This file is the only thing the human iterates on. The scoring config is
-the only thing **you** iterate on. Don't touch source code.
+The loop is **free** — no Anthropic API calls, no \$ cost. Each
+experiment is just `bash tools/autoresearch/run-one.sh`, which rebuilds
+cgrca, runs the eval against text mode + grep (both no-LLM), and prints
+the metric. ~30 seconds per experiment. 30 experiments = ~15 minutes.
+
+YOU are the agent. You read this program, edit the scoring config, run
+the eval, decide keep/discard, repeat. Your subscription covers it.
+
+This file (`program.md`) is the only thing the human iterates on. The
+scoring config is the only thing **you** iterate on. Don't touch source
+code.
 
 ## How to run one experiment
 
@@ -32,13 +41,20 @@ the only thing **you** iterate on. Don't touch source code.
 
 ## What to optimise
 
-Primary: `text` mode top-1 (the static cgrca scoring path — no LLM calls,
-fast, the surface this autoresearch can move).
-Secondary: `llm` mode top-1.
-Tiebreaker: MRR.
+**Only metric**: `text` mode top-1.
 
-Don't optimise `llm-codebase` or `llm-codebase-enriched` — they don't read
-this config, so they won't move regardless.
+Why text-only: it's the only mode that responds to changes in
+`scoring-config.json`. The `llm` and `llm-codebase` modes don't read
+this config — they would just produce identical numbers across all
+experiments and waste \$ + time on every run.
+
+Tiebreaker: MRR (also from text mode).
+Sanity check: don't let text top-5 regress by >2pp.
+
+After 30 experiments OR when you stop, you can OPTIONALLY run one final
+validation pass with `AUTORESEARCH_MODES=text,llm,baseline-grep bash
+tools/autoresearch/run-one.sh` to confirm the LLM-mode metric also
+held / improved. That single run costs ~\$0.20.
 
 ## Knobs by leverage (rough guide)
 
@@ -76,11 +92,15 @@ the agent should explore beyond.
 ## When to stop
 
 - 30 experiments completed
-- OR $10 LLM budget exhausted (sum the `cost.usd` from each eval; stop at $9.50)
 - OR no improvement in 10 consecutive experiments (you're stuck in a basin)
+- OR the user interrupts
 
-When stopping, print a markdown summary to stdout: best config, best
-metrics, total experiments, total cost, top 3 contributing knob changes.
+(No \$ budget — text-mode eval is free.)
+
+When stopping, print a markdown summary: best config, best metrics
+(text top-1, top-5, MRR), total experiments, top 3 contributing knob
+changes, knobs marked saturated. Optionally run the LLM-mode validation
+pass per the section above.
 
 ## Hard constraints
 

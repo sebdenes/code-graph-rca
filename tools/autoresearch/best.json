@@ -1,12 +1,9 @@
 {
-  "_comment": "Updated by the autoresearch agent after each kept experiment. Initial state = v0.5.0 baseline metrics on the 9-bug corpus. The 'config' field is the scoring-config that produced these metrics.",
+  "_comment": "Updated by the autoresearch agent after each kept experiment. Initial state = v0.5.0 baseline metrics on the 9-bug corpus. Only text-mode metrics are tracked here — those are the only ones autoresearch can move (llm + llm-codebase don't read scoring-config).",
   "metrics": {
     "text_top1": 0.444,
     "text_top5": 0.667,
-    "text_mrr": 0.548,
-    "llm_top1": 0.778,
-    "llm_top5": 0.778,
-    "llm_mrr": 0.778
+    "text_mrr": 0.548
   },
   "experiment_id": 0,
   "timestamp": "2026-05-03T00:00:00Z",
