@@ -133,7 +133,7 @@ const MODES = String(args.flags.modes ?? 'current,text,file')
 	.map((s) => s.trim())
 	.filter(Boolean);
 
-const KNOWN_MODES = new Set(['current', 'text', 'file', 'baseline-grep', 'llm', 'llm-codebase']);
+const KNOWN_MODES = new Set(['current', 'text', 'file', 'baseline-grep', 'llm', 'llm-codebase', 'llm-codebase-enriched']);
 for (const m of MODES) {
 	if (!KNOWN_MODES.has(m)) {
 		process.stderr.write(`run-eval: unknown mode '${m}'. Known: ${[...KNOWN_MODES].join(',')}\n`);
@@ -426,15 +426,21 @@ function runMode(mode, entry) {
 		// "@codebase-style" baseline (v0.5 plan kill criterion gate). No graph,
 		// no cgrca — just BM25-lite over file content + LLM picks. Implemented
 		// in tools/eval/llm-codebase-baseline.mjs to keep zero deps.
-		return runLlmCodebaseBaseline(entry);
+		return runStandaloneBaseline('tools/eval/llm-codebase-baseline.mjs', entry);
+	}
+	if (mode === 'llm-codebase-enriched') {
+		// v0.6 Phase 6 gate: BM25 retrieval + cgrca structural enrichment.
+		// Same LLM, same retrieval, plus callers/callees/recent commits per
+		// candidate. The gate: lift llm-codebase top-1 by ≥5pp.
+		return runStandaloneBaseline('tools/eval/llm-codebase-enriched-baseline.mjs', entry);
 	}
 	return { ok: false, ms: 0, err: `unknown mode ${mode}` };
 }
 
-function runLlmCodebaseBaseline(entry) {
+function runStandaloneBaseline(scriptPath, entry) {
 	const t0 = Date.now();
 	const cliArgs = [
-		resolve('tools/eval/llm-codebase-baseline.mjs'),
+		resolve(scriptPath),
 		'--repo', REPO_ABS,
 		'--failure', entry.failure_description,
 		'--provider', LLM_PROVIDER,
@@ -518,6 +524,18 @@ function killCriterionPhase4Line(summary) {
 	return `Phase 4 kill criterion (llm >= llm-codebase + 10pp top-1): ${pass ? 'PASS' : 'FAIL'} (llm=${fmt(llm)}, llm-codebase=${fmt(baseline)}, Δ=${(delta * 100).toFixed(1)}pp)`;
 }
 
+function killCriterionPhase6Line(summary) {
+	// docs/v0.6-plan.md Phase 6: cgrca enrichment must lift the bare BM25
+	// baseline (`llm-codebase`) by >=5pp top-1 when wrapped as
+	// `llm-codebase-enriched`. Validates the structural-layer thesis.
+	const enriched = summary['llm-codebase-enriched']?.top1;
+	const baseline = summary['llm-codebase']?.top1;
+	if (!Number.isFinite(enriched) || !Number.isFinite(baseline)) return null;
+	const delta = enriched - baseline;
+	const pass = delta >= 0.05;
+	return `Phase 6 kill criterion (llm-codebase-enriched >= llm-codebase + 5pp top-1): ${pass ? 'PASS' : 'FAIL'} (enriched=${fmt(enriched)}, baseline=${fmt(baseline)}, Δ=${(delta * 100).toFixed(1)}pp)`;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -557,7 +575,7 @@ for (const entry of entries) {
 		// as a single "candidate" — the LLM either picked the right thing or
 		// it didn't. rootCause=null counts as a miss (LLM honestly declined).
 		// llm-codebase already pre-fills res.candidates with the rootCause.
-		const isLlmMode = mode === 'llm' || mode === 'llm-codebase';
+		const isLlmMode = mode === 'llm' || mode === 'llm-codebase' || mode === 'llm-codebase-enriched';
 		const candidatesForScoring =
 			mode === 'llm' && res.llm
 				? (res.llm.verdict?.rootCause
@@ -589,6 +607,8 @@ const kill = killCriterionLine(summary);
 if (kill) process.stdout.write('\n' + kill + '\n');
 const kill4 = killCriterionPhase4Line(summary);
 if (kill4) process.stdout.write(kill4 + '\n');
+const kill6 = killCriterionPhase6Line(summary);
+if (kill6) process.stdout.write(kill6 + '\n');
 
 const out = {
 	createdAt: new Date().toISOString(),
