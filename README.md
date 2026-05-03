@@ -51,7 +51,7 @@ Ten MCP tools, all backed by tree-sitter parsing + git + a calibrated 7-signal s
 | `cgrca_symbolsInFile` | What's in this file? Quick file-level survey. |
 | `cgrca_rca` | Full ranked-candidate RCA from a stack trace / failing test / symbol / file. |
 | `cgrca_rcaPrompt` | Same, but returns the assembled markdown prompt — drop straight into a reasoning loop. |
-| `cgrca_rcaWithReasoning` | LLM-augmented RCA via the host's LLM (no API key needed in Claude Code). |
+| `cgrca_rcaWithReasoning` | LLM-augmented RCA via the host's LLM (no API key needed in agent hosts that bring their own LLM). |
 | `cgrca_enrichCandidates` | Take any retriever's `(file, symbol)` candidates and annotate each with body + callers + callees + recent commits. **The composability tool.** |
 
 Plus `cgrca_scope`, `cgrca_currentSelection`, `cgrca_publishSelection` for advanced flows.
