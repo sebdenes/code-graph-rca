@@ -543,6 +543,65 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
     },
   );
 
+  // ---- Tool: enrichCandidates (v0.6 Phase 6 — structural layer for any retriever) ----
+  server.registerTool(
+    "cgrca_enrichCandidates",
+    {
+      description:
+        "v0.6 structural layer for code-RCA. Accepts a list of (file, symbol) candidates from ANY retriever (Cursor @codebase, Copilot, Continue, embedding-RAG, hand-typed) and returns each annotated with cgrca's structural facts: definition info, body preview, 1-hop callers/callees, and recent commits touching the symbol's lines. The host LLM picks the most likely root cause from the enriched set — cgrca's value is in providing facts no embedding-similarity score can give.",
+      inputSchema: {
+        candidates: z
+          .array(
+            z.object({
+              file: z.string().describe("Path relative to repo root"),
+              symbol: z.string().optional().describe("Symbol name; if omitted, all symbols in file"),
+              line: z.number().int().min(1).optional().describe("Optional line hint for symbol disambiguation"),
+            }),
+          )
+          .min(1)
+          .describe("Candidates from any retriever to enrich"),
+        includeBody: z.boolean().optional().describe("Include body preview (default true; up to 30 lines per symbol)"),
+        includeNeighbors: z.boolean().optional().describe("Include 1-hop callers/callees (default true; top 3 each)"),
+        includeRecency: z.boolean().optional().describe("Include recent commits touching the symbol's lines (default true; last 5)"),
+        maxBodyLines: z.number().int().min(5).max(100).optional().describe("Max lines per body preview (default 30)"),
+        maxFiles: z.number().int().min(1).max(2000).optional().describe("Cap on files indexed (default 200)"),
+      },
+    },
+    async ({ candidates, includeBody, includeNeighbors, includeRecency, maxBodyLines, maxFiles }) => {
+      const wantBody = includeBody !== false;
+      const wantNeighbors = includeNeighbors !== false;
+      const wantRecency = includeRecency !== false;
+      const bodyLines = maxBodyLines ?? 30;
+
+      // Index broadly so we have a Db that knows about every candidate's
+      // file. Same approach as cgrca_rcaWithReasoning — re-index here so
+      // the tool is self-contained (no warm-up step needed).
+      const broadFiles = walk(opts.repoRoot)
+        .filter((f) => f.language === "typescript" || f.language === "python")
+        .slice(0, maxFiles ?? 200)
+        .map((f) => f.relPath);
+      const indexed = await indexScope({
+        repoRoot: opts.repoRoot,
+        scope: broadFiles,
+        ...(maxFiles !== undefined ? { maxFiles } : {}),
+      });
+      logVia("cgrca_enrichCandidates", "in-process");
+      try {
+        const enriched = await Promise.all(
+          candidates.map(async (cand) => enrichOne(indexed.db, opts.repoRoot, cand, {
+            wantBody,
+            wantNeighbors,
+            wantRecency,
+            bodyLines,
+          })),
+        );
+        return asJson({ enriched });
+      } finally {
+        indexed.db.close();
+      }
+    },
+  );
+
   // ---- Tool: scope (preview which files cgrca would index for a failure, no parse) ----
   server.registerTool(
     "cgrca_scope",
@@ -613,6 +672,137 @@ export async function startMcpServer(opts: ServerOptions): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+}
+
+interface EnrichInput {
+  file: string;
+  symbol?: string | undefined;
+  line?: number | undefined;
+}
+
+interface EnrichOptions {
+  wantBody: boolean;
+  wantNeighbors: boolean;
+  wantRecency: boolean;
+  bodyLines: number;
+}
+
+interface EnrichedCandidate {
+  /** Echo of input. */
+  input: EnrichInput;
+  /** Resolved symbol name (== input.symbol when provided + found). */
+  symbol: string | null;
+  /** Path relative to repo root. */
+  file: string;
+  /** Resolved start/end line range from definitionOf. */
+  startLine: number | null;
+  endLine: number | null;
+  /** Symbol kind (function/method/class/...) — null when not found in graph. */
+  kind: string | null;
+  /** Body length in lines (end - start + 1) — null when not found. */
+  loc: number | null;
+  /** Subsystem (workspace package or top-level dir). */
+  subsystem: string | null;
+  /** Optional fields populated based on EnrichOptions. */
+  body?: { text: string; startLine: number; endLine: number; truncated: boolean; language: string };
+  callers?: Array<{ file: string; symbol: string; line: number }>;
+  callees?: Array<{ file: string; symbol: string; line: number }>;
+  recentChanges?: Array<{ commit: string; date: string; subject: string; author: string }>;
+  /** Note explaining gaps (file not indexed, symbol not found, etc.). */
+  notes: string[];
+}
+
+async function enrichOne(
+  db: Database,
+  repoRoot: string,
+  cand: EnrichInput,
+  opts: EnrichOptions,
+): Promise<EnrichedCandidate> {
+  const { fetchBody } = await import("../rca/llm/body.js");
+  const out: EnrichedCandidate = {
+    input: cand,
+    symbol: cand.symbol ?? null,
+    file: cand.file,
+    startLine: null,
+    endLine: null,
+    kind: null,
+    loc: null,
+    subsystem: null,
+    notes: [],
+  };
+
+  // Resolve symbol via definitionOf — may return multiple defs (overloads).
+  // Pick the one matching candidate's file; if line hint provided, also
+  // require the symbol's range to contain it.
+  const symName = cand.symbol;
+  if (!symName) {
+    out.notes.push("no symbol provided; skipping definition lookup");
+    return out;
+  }
+  const defs = definitionOf(db, symName);
+  let pick = defs.find((d) => d.file === cand.file);
+  if (pick && cand.line !== undefined) {
+    const inRange = defs.find(
+      (d) => d.file === cand.file && d.startLine <= cand.line! && d.endLine >= cand.line!,
+    );
+    if (inRange) pick = inRange;
+  }
+  if (!pick) {
+    out.notes.push(`symbol "${symName}" not found in indexed graph for ${cand.file} (file may be past --max-files budget)`);
+    return out;
+  }
+  out.symbol = pick.name;
+  out.startLine = pick.startLine;
+  out.endLine = pick.endLine;
+  out.kind = pick.kind;
+  out.loc = pick.endLine - pick.startLine + 1;
+  out.subsystem = pick.subsystem ?? null;
+
+  if (opts.wantBody) {
+    const snip = fetchBody(repoRoot, pick.file, pick.startLine, pick.endLine, opts.bodyLines);
+    if (snip) {
+      out.body = {
+        text: snip.body,
+        startLine: snip.startLine,
+        endLine: snip.endLine,
+        truncated: snip.truncated,
+        language: snip.language,
+      };
+    }
+  }
+
+  if (opts.wantNeighbors) {
+    const callerTree = callersOf(db, symName, { depth: 1, minConfidence: 0.5 });
+    const calleeTree = calleesOf(db, symName, { depth: 1 });
+    out.callers = (callerTree?.callers ?? [])
+      .slice(0, 3)
+      .map((n) => ({ symbol: n.name, file: n.file, line: n.line }));
+    // Callees may be unresolved (file/line null for stdlib / external pkg
+     // calls). Filter to only resolved callees so the LLM doesn't get
+     // pointed at "we don't know where this is."
+    out.callees = (calleeTree?.callees ?? [])
+      .filter((n): n is typeof n & { file: string; line: number } =>
+        n.file !== null && n.line !== null,
+      )
+      .slice(0, 3)
+      .map((n) => ({ symbol: n.name, file: n.file, line: n.line }));
+  }
+
+  if (opts.wantRecency) {
+    try {
+      const changes = recentlyChangedNear(db, symName, { repoRoot, sinceDays: 90 });
+      out.recentChanges = (changes ?? []).slice(0, 5).map((c) => ({
+        commit: c.commit,
+        date: c.date,
+        subject: c.subject,
+        author: c.author,
+      }));
+    } catch (err) {
+      out.notes.push(`recency lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return out;
 }
 
 function buildFailureScope(args: {
