@@ -154,37 +154,11 @@ const DEFAULT_TOP_N = 5;
 // away through a wrapper still lights up. Until one of those lands,
 // the calibrated weight stays at 0 and the legacy A/B path keeps 1.0
 // so the new gating is exercised end-to-end (rationale text + tests).
-const W_RECENCY = 0.0766;
-const W_PROXIMITY = 0.0; // raw fit -1.39, clipped — proximity is nearly
-                          // constant within a non-anchor candidate set, so
-                          // it carries no discriminative signal here.
-const W_AMBIGUITY = 0.2133;
-const W_COCHANGE = 0.4744;
-const W_SUBSYSTEM = 0.8909;
-const W_COMPLEXITY = 0.1679;
-const W_DATAFLOW = 0.0; // raw fit -0.80, clipped — see note above.
-
-// Legacy (pre-calibration) multipliers — all 1.0, i.e. raw bucket scores.
-// Data-flow stays at 1.0 here so the legacy A/B path keeps the new signal
-// fully active (the legacy track is the "everything counts equally" floor).
-const LEGACY_W = {
-  recency: 1.0,
-  proximity: 1.0,
-  ambiguity: 1.0,
-  coChange: 1.0,
-  subsystem: 1.0,
-  complexity: 1.0,
-  dataflow: 1.0,
-};
-const CALIBRATED_W = {
-  recency: W_RECENCY,
-  proximity: W_PROXIMITY,
-  ambiguity: W_AMBIGUITY,
-  coChange: W_COCHANGE,
-  subsystem: W_SUBSYSTEM,
-  complexity: W_COMPLEXITY,
-  dataflow: W_DATAFLOW,
-};
+// v0.7: weights sourced from `scoring-config.json` (or bundled defaults).
+// The autoresearch loop edits the JSON; cgrca code reads from it. Defaults
+// match v0.5.0 hardcoded values exactly — no config file = no behavior
+// change. See packages/core/src/config/scoring-config.ts.
+import { getScoringConfig } from "../config/scoring-config.js";
 
 export function buildCausalChain(
   input: CausalChainInput,
@@ -192,7 +166,8 @@ export function buildCausalChain(
 ): CausalCandidate[] {
   const recencyDays = opts.recencyDays ?? DEFAULT_RECENCY_DAYS;
   const topN = opts.topN ?? DEFAULT_TOP_N;
-  const W = opts.useLegacyWeights ? LEGACY_W : CALIBRATED_W;
+  const cfg = getScoringConfig().scorer;
+  const W = opts.useLegacyWeights ? cfg.legacy_weights : cfg.calibrated_weights;
 
   // 1. Collect candidates: anchor + callers (depth<=2) + callees (depth<=2), deduped.
   const candidates = collectCandidates(input);

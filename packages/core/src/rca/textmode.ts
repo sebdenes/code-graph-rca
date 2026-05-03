@@ -1,4 +1,5 @@
 import type { Db } from "../graph/db.js";
+import { getScoringConfig } from "../config/scoring-config.js";
 
 /**
  * Free-text retrieval (Phase 1, v0.5).
@@ -204,6 +205,13 @@ export function matchTokensAgainstKg(
   const allTokens = [...tokens.identifierTokens, ...tokens.literalTokens];
   if (allTokens.length === 0) return [];
 
+  // v0.7: every weight + threshold sourced from scoring-config.json.
+  // The autoresearch loop edits the JSON; this code reads from it. Pulled
+  // once at the top so the SQL queries below can interpolate the int
+  // thresholds (length guards + LIMIT) — better-sqlite3 doesn't bind
+  // those well as parameters.
+  const cfg = getScoringConfig().matcher;
+
   // Bucket per symbol id. We accumulate sets (distinct tokens) rather
   // than counters so a single token doesn't get to inflate its own bucket
   // by appearing twice in the prose.
@@ -286,13 +294,13 @@ export function matchTokensAgainstKg(
        FROM symbols s
        JOIN files f ON f.id = s.file_id
       WHERE LOWER(s.name) LIKE ? ESCAPE '\\'
-        AND length(s.name) >= 5
+        AND length(s.name) >= ${cfg.substring_name_min_symbol_length}
       ORDER BY length(s.name) DESC
-      LIMIT 100`,
+      LIMIT ${cfg.substring_name_per_token_cap}`,
   );
   const seenSubName = new Set<string>();
   const tryNameSubstring = (sub: string): void => {
-    if (sub.length < 4) return;
+    if (sub.length < cfg.substring_name_min_length) return;
     if (seenSubName.has(sub)) return;
     seenSubName.add(sub);
     const escaped = sub.replace(/[\\%_]/g, (ch) => `\\${ch}`);
@@ -333,7 +341,7 @@ export function matchTokensAgainstKg(
   //     hints / default values. Length >= 5 to avoid noise.
   const seenSigSub = new Set<string>();
   const trySignatureSubstring = (sub: string, originalTok: string): void => {
-    if (sub.length < 5) return;
+    if (sub.length < cfg.signature_substring_min_length) return;
     const key = sub + "\0" + originalTok;
     if (seenSigSub.has(key)) return;
     seenSigSub.add(key);
@@ -345,7 +353,7 @@ export function matchTokensAgainstKg(
     }
   };
   for (const tok of tokens.identifierTokens) {
-    if (tok.length >= 5) trySignatureSubstring(tok.toLowerCase(), tok);
+    if (tok.length >= cfg.signature_substring_min_length) trySignatureSubstring(tok.toLowerCase(), tok);
     for (const sub of splitCompound(tok)) trySignatureSubstring(sub, tok);
   }
 
@@ -372,7 +380,7 @@ export function matchTokensAgainstKg(
   );
   const seenBodySub = new Set<string>();
   const tryBodyContent = (sub: string, originalTok: string): void => {
-    if (sub.length < 8) return;
+    if (sub.length < cfg.body_content_min_length) return;
     const key = sub + "\0" + originalTok;
     if (seenBodySub.has(key)) return;
     seenBodySub.add(key);
@@ -384,7 +392,7 @@ export function matchTokensAgainstKg(
     }
   };
   for (const tok of tokens.identifierTokens) {
-    if (tok.length >= 8) tryBodyContent(tok.toLowerCase(), tok);
+    if (tok.length >= cfg.body_content_min_length) tryBodyContent(tok.toLowerCase(), tok);
     for (const sub of splitCompound(tok)) tryBodyContent(sub, tok);
   }
 
@@ -434,15 +442,12 @@ export function matchTokensAgainstKg(
   // tokens are inherently noisier than name tokens — many functions have
   // bodies that mention common words. Lower weight prevents body matches
   // from displacing real name/signature hits.
-  const NAME_W = 3.0;
-  const SUBNAME_W = 1.0;
-  const BODY_W = 2.0;
-  const BODY_CONTENT_W = 0.3;
-  const IMPORT_W = 0.5;
-  // Max ceiling: every identifier token AND every sub-word can fire on every
-  // bucket. We cap sub-word count at 3 per token (typical decomposition) so
-  // long failure descriptions don't push the ceiling unrealistically high.
-  const SUBWORDS_PER_TOK = 3;
+  const NAME_W = cfg.name_match_weight;
+  const SUBNAME_W = cfg.subname_match_weight;
+  const BODY_W = cfg.signature_match_weight;
+  const BODY_CONTENT_W = cfg.body_content_weight;
+  const IMPORT_W = cfg.import_match_weight;
+  const SUBWORDS_PER_TOK = cfg.subwords_per_token_ceiling;
   const maxRaw =
     NAME_W * tokens.identifierTokens.length +
     SUBNAME_W * tokens.identifierTokens.length * SUBWORDS_PER_TOK +
