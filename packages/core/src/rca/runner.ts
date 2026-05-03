@@ -256,20 +256,27 @@ export async function runRca(req: RcaRequest): Promise<RcaResult> {
     // its candidates with the merged multi-anchor result so the table
     // surfaces every symbol in the file ranked by the existing 7 signals.
     if (req.failureScope.kind === "file" && firstSeed) {
-      const fileSeeds = symbolsInFile(indexed.db, firstSeed)
-        .filter(
-          (s) =>
-            s.kind === "function" ||
-            s.kind === "method" ||
-            s.kind === "class" ||
-            s.kind === "const" ||
-            s.kind === "interface" ||
-            s.kind === "type" ||
-            s.kind === "enum",
-        )
-        .map((s) => ({ name: s.name, file: firstSeed, line: s.startLine }));
+      // v0.8: include symbols from ALL seeds (original + cochange-expanded)
+      // so the multi-anchor walk surfaces candidates from each. Without
+      // this, cochange-added files enter scope but never reach the
+      // candidate ranking — exactly the bug v0.8 was built to fix.
+      const allSeedFiles = scopeResult.seeds;
+      const fileSeeds = allSeedFiles.flatMap((sf) =>
+        symbolsInFile(indexed.db, sf)
+          .filter(
+            (s) =>
+              s.kind === "function" ||
+              s.kind === "method" ||
+              s.kind === "class" ||
+              s.kind === "const" ||
+              s.kind === "interface" ||
+              s.kind === "type" ||
+              s.kind === "enum",
+          )
+          .map((s) => ({ name: s.name, file: sf, line: s.startLine })),
+      );
       if (fileSeeds.length === 0) {
-        notes.push(`no indexed symbols in ${firstSeed}`);
+        notes.push(`no indexed symbols in seeds (${allSeedFiles.length} seed file(s))`);
       } else {
         const merged = await runMultiAnchor({
           db: indexed.db,

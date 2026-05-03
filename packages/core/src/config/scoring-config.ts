@@ -49,6 +49,9 @@ export interface ScoringConfig {
     default_max_files: number;
     default_top_n: number;
     free_text_seed_cap: number;
+    cochange_seed_topn: number;
+    cochange_lookback_days: number;
+    cochange_min_cooccurrences: number;
   };
 }
 
@@ -109,6 +112,9 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
     default_max_files: 200,
     default_top_n: 5,
     free_text_seed_cap: 8,
+    cochange_seed_topn: 8,
+    cochange_lookback_days: 365,
+    cochange_min_cooccurrences: 2,
   },
 };
 

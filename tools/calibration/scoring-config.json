@@ -40,6 +40,9 @@
   "retrieval": {
     "default_max_files": 200,
     "default_top_n": 5,
-    "free_text_seed_cap": 8
+    "free_text_seed_cap": 8,
+    "cochange_seed_topn": 8,
+    "cochange_lookback_days": 365,
+    "cochange_min_cooccurrences": 2
   }
 }

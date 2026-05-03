@@ -1,8 +1,10 @@
 import { readFileSync, readdirSync, realpathSync, statSync, existsSync } from "node:fs";
 import { join, dirname, relative, sep, posix } from "node:path";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import type { Ignore } from "ignore";
 import { languageOf } from "./walker.js";
+import { getScoringConfig } from "../config/scoring-config.js";
 
 const requireFromHere = createRequire(import.meta.url);
 const ignoreLib = requireFromHere("ignore") as (options?: { ignorecase?: boolean }) => Ignore;
@@ -306,6 +308,79 @@ function findCallers(repoRoot: string, allFiles: string[], seedRel: string): str
   return out;
 }
 
+/**
+ * Find files that historically co-changed with the given seed file.
+ * Returns up to `topn` co-changed files, sorted by cooccurrence count desc.
+ * Only files with cooccurrence >= minCount are returned. Uses git log
+ * --name-only over the configured lookback window. Best-effort: returns []
+ * if git is unavailable or the seed isn't tracked.
+ */
+function findCoChangedFiles(
+  repoRoot: string,
+  seed: string,
+  topn: number,
+  lookbackDays: number,
+  minCount: number,
+): string[] {
+  if (topn <= 0) return [];
+  try {
+    // Step 1: get commits that touched seed.
+    const shaResult = spawnSync(
+      "git",
+      [
+        "-C", repoRoot,
+        "log",
+        `--since=${lookbackDays}.days.ago`,
+        "--no-merges",
+        "--format=%H",
+        "--", seed,
+      ],
+      { encoding: "utf8", timeout: 5000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    if (shaResult.status !== 0 || !shaResult.stdout) return [];
+    const shas = shaResult.stdout.split("\n").filter(s => s.length === 40);
+    if (shas.length === 0) return [];
+    // Cap commits we process to bound git work.
+    const capShas = shas.slice(0, 200);
+    // Step 2: list all files for each commit, count cooccurrences.
+    const coCounts = new Map<string, number>();
+    const filesResult = spawnSync(
+      "git",
+      [
+        "-C", repoRoot,
+        "log",
+        "--no-walk",
+        "--pretty=format:COMMIT",
+        "--name-only",
+        ...capShas,
+      ],
+      { encoding: "utf8", timeout: 15000, maxBuffer: 32 * 1024 * 1024 },
+    );
+    if (filesResult.status !== 0 || !filesResult.stdout) return [];
+    let group: string[] = [];
+    let inCommit = false;
+    const flush = () => {
+      for (const f of group) {
+        if (f === seed) continue;
+        coCounts.set(f, (coCounts.get(f) ?? 0) + 1);
+      }
+      group = [];
+    };
+    for (const line of filesResult.stdout.split("\n")) {
+      if (line === "COMMIT") { flush(); inCommit = true; }
+      else if (line && inCommit) group.push(line);
+    }
+    flush();
+    return [...coCounts.entries()]
+      .filter(([, n]) => n >= minCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, topn)
+      .map(([f]) => f);
+  } catch {
+    return [];
+  }
+}
+
 export function resolveScope(
   failure: FailureScope, repoRoot: string, budget: ScopeBudget = {},
 ): ResolvedScope {
@@ -377,6 +452,37 @@ export function resolveScope(
     estimatedLoc += lines;
     return true;
   };
+
+  // v0.8: expand scope (AND seeds) with files that historically co-changed
+  // with each seed. Co-change is the strongest predictor of co-modification
+  // in fixes, but cgrca's structural-only scope used to gate it away.
+  // Adding co-changed files as additional seeds lets the runner expand
+  // callers/callees from them — so they enter causalCandidates with their
+  // own caller/callee chains and the scorer's coChange signal applied.
+  if (cap === null) {
+    const retCfg = getScoringConfig().retrieval;
+    const addedCochange: string[] = [];
+    const originalSeedsSnapshot = seeds.slice();
+    for (const seed of originalSeedsSnapshot) {
+      if (cap !== null) break;
+      const cofiles = findCoChangedFiles(
+        repoRoot, seed,
+        retCfg.cochange_seed_topn,
+        retCfg.cochange_lookback_days,
+        retCfg.cochange_min_cooccurrences,
+      );
+      for (const cf of cofiles) {
+        if (!result.has(cf) && isParseable(cf) && existsSync(join(repoRoot, cf))) {
+          if (!addFile(cf)) break;
+          if (!seeds.includes(cf)) seeds.push(cf);
+          addedCochange.push(cf);
+        }
+      }
+    }
+    if (addedCochange.length > 0) {
+      notes.push(`cochange-expanded scope with ${addedCochange.length} file(s)`);
+    }
+  }
 
   let frontier: string[] = Array.from(result);
   for (let depth = 0; depth < maxDepth && cap === null; depth++) {
