@@ -14,19 +14,19 @@ whether Phase 1 actually adds value.
 # Basic — current vs. text-mode vs. file-fixed.
 node tools/eval/run-eval.mjs \
   --corpus tools/eval/corpus.jsonl \
-  --repo /path/to/athlai \
+  --repo /path/to/your/repo \
   --modes current,text,file
 
 # Add the naive baseline cgrca needs to beat.
 node tools/eval/run-eval.mjs \
   --corpus tools/eval/corpus.jsonl \
-  --repo /path/to/athlai \
+  --repo /path/to/your/repo \
   --modes current,text,file,baseline-grep
 
 # Smoke test on first 3 entries.
 node tools/eval/run-eval.mjs \
   --corpus tools/eval/corpus.jsonl \
-  --repo /path/to/athlai \
+  --repo /path/to/your/repo \
   --limit 3
 ```
 
@@ -74,7 +74,7 @@ A different agent owns `corpus.jsonl`. One JSON object per line:
 
 ```json
 {
-  "id": "athlai#1234",
+  "id": "your-repo#1234",
   "failure_description": "cyclist marathon training plan generates negative rest days when distance < 5km",
   "fix_files": ["src/training/plan_generator.py"],
   "fix_symbols": ["compute_rest_days"]

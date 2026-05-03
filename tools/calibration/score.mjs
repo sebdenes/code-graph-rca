@@ -35,7 +35,7 @@ const SIGNAL_DUMP = SIGNAL_DUMP_IDX >= 0 ? process.argv[SIGNAL_DUMP_IDX + 1] : n
 
 const REPO_PATHS = {
 	'sebdenes/code-graph-rca': '/Users/I048171/code-graph-rca',
-	'sebdenes/athlai': '/Users/I048171/Athlai-Antigravity/athlai',
+	'sebdenes/example-repo': '/path/to/repo',
 };
 
 const TOP_K_FOR_MRR = 10;

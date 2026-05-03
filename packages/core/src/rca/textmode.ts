@@ -278,10 +278,10 @@ export function matchTokensAgainstKg(
   //     length >= 5 are eligible (so `i` doesn't hit `i_path`).
   const subNameStmt = db.prepare(
     // ORDER BY length(name) DESC — longer names are more specific signal.
-    // Without this, a sub-word like "sport" matching 200+ symbols (athlai
+    // Without this, a sub-word like "sport" matching 200+ symbols (the eval corpus
     // 2026-05-03) returns the first-100-by-id and drops specific candidates
     // like `_parse_sport_setting_cp` (22 chars, in late-walked file)
-    // entirely. The pr23-cp-type-conv miss traced directly to this LIMIT.
+    // entirely. The a type-coercion bug miss traced directly to this LIMIT.
     `SELECT s.id AS id, s.name AS name, f.path AS path, s.start_line AS start_line
        FROM symbols s
        JOIN files f ON f.id = s.file_id
@@ -356,7 +356,7 @@ export function matchTokensAgainstKg(
   //     words (e.g. "asterisks" in pr22 maps to `re.sub(r'[*_~`]', ...)` in
   //     `_strip_markdown`'s body but NOT its name or signature).
   //
-  //     **Length guard tuned empirically (athlai 2026-05-03)**: only tokens
+  //     **Length guard tuned empirically (the eval corpus 2026-05-03)**: only tokens
   //     of length >= 8 search the body. Shorter tokens ("error", "fetch",
   //     "events", "marathon", "scheduler") are common enough in code bodies
   //     that they displace real top-1s (cyclist + events + compliance all

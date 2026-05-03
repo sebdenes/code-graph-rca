@@ -38,8 +38,8 @@ const REPOS = [
 		gitLogLimit: 50,
 	},
 	{
-		slug: 'sebdenes/athlai',
-		localPath: '/Users/I048171/Athlai-Antigravity/athlai',
+		slug: 'sebdenes/example-repo',
+		localPath: '/path/to/repo',
 		prLimit: 200,
 		gitLogFallback: true,
 		gitLogLimit: 120,
@@ -498,7 +498,7 @@ function processGitLogFallback(repo, existingIds) {
 
 const REPO_PATHS = {
 	'sebdenes/code-graph-rca': '/Users/I048171/code-graph-rca',
-	'sebdenes/athlai': '/Users/I048171/Athlai-Antigravity/athlai',
+	'sebdenes/example-repo': '/path/to/repo',
 };
 
 const TRACE_RE = /(File "[^"]+", line \d+)|(at [\w$.<>]+ \([^)]+:\d+(?::\d+)?\))|(Traceback \(most recent call last\))|(\bat .+:\d+:\d+)/;

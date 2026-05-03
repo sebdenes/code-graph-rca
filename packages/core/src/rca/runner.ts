@@ -597,7 +597,7 @@ async function runFreeTextRca(
     // Cap at topN extras so we don't pollute the ranking; score by
     // matcher's totalScore lifted into the candidate scorer's range.
     const targetN = req.topN ?? 5;
-    // Cap chosen empirically (athlai 2026-05-03): pr23-cp-type-conv's fix
+    // Cap chosen empirically (the eval corpus 2026-05-03): a type-coercion bug's fix
     // symbol `_parse_sport_setting_cp` lands at matcher rank ~37 (only the
     // "sport" sub-word matches; everything else is more specific). 5x is
     // wide enough to surface it without polluting the candidate set with

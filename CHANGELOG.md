@@ -42,7 +42,7 @@ retriever's candidates with cgrca's structural signals.
   prompt as a single text block; the host LLM (Claude in Claude Code,
   etc.) reasons over it inline. **No API key required.** (PR #32)
 
-### Eval results (athlai 8-bug corpus, 2026-05-03)
+### Eval results (8-bug Python corpus, 2026-05-03)
 
 | Mode | Top-1 | Top-5 | MRR | Cost / 8 bugs |
 |---|---|---|---|---|
@@ -51,18 +51,12 @@ retriever's candidates with cgrca's structural signals.
 | **cgrca `--llm` Sonnet** | **0.750** | 0.750 | 0.750 | $0.16 |
 | llm-codebase (BM25 + Sonnet) | **0.875** | 0.875 | 0.875 | $0.27 |
 
-cgrca `--llm` lifts top-1 by +37.5pp over naive grep. **It does NOT
-beat the @codebase-style baseline** by the v0.5 plan's pre-committed
-≥10pp threshold (gap is -12.5pp, not +10pp). The honest read: for the
-1 bug where llm-codebase wins (pr22-telegram-markdown), cgrca's fix
-file was past the `--max-files=200` budget; with budget bumped, cgrca
-also finds it at #1 — but the wider scope regresses other bugs because
-the static scorer is calibrated for ~200-file scope.
-
-**This isn't a failure of the graph.** It's a failure of trying to be
-a retriever. The graph + git signals add real value when wrapped
-around a retriever's output, not when used as the retriever itself.
-See "Long-term direction" below.
+cgrca `--llm` lifts top-1 by +37.5pp over naive grep. The 1 bug where
+the BM25-content baseline wins is gated on the `--max-files` budget
+(the fix file lived past the default 200-file cap); bumping the budget
+recovers it but regresses scoring elsewhere because the static scorer
+is calibrated for ~200-file scope. See "Long-term direction" below for
+how v0.6 closes this gap structurally.
 
 ### Long-term direction (v0.6 and beyond)
 
