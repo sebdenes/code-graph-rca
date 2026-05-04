@@ -58,11 +58,17 @@ export function AppShell({ sessions, children }: Props) {
             aria-label="session"
           >
             {sessions.length === 0 && <option value="">(none)</option>}
-            {sessions.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.id} — {s.primarySymbol ?? "?"}
-              </option>
-            ))}
+            {sessions.map((s) => {
+              const repoLabel = s.repoRoot
+                ? s.repoRoot.split("/").filter(Boolean).pop()
+                : null;
+              const tail = s.primarySymbol ?? repoLabel ?? "(no name)";
+              return (
+                <option key={s.id} value={s.id}>
+                  {s.id.slice(0, 12)} — {tail}
+                </option>
+              );
+            })}
           </select>
           {active && (
             <>
