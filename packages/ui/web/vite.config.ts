@@ -45,5 +45,13 @@ export default defineConfig({
   build: {
     outDir: resolve(here, "..", "dist", "web"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/monaco-editor")) return "monaco";
+          return undefined;
+        },
+      },
+    },
   },
 });
