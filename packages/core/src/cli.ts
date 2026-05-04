@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { runRca, type FailureScope } from "./rca/runner.js";
 import { indexScope } from "./graph/orchestrator.js";
@@ -14,7 +15,15 @@ import {
 } from "./graph/queries.js";
 import type { CausalCandidate } from "./types.js";
 
-const VERSION = "0.0.1";
+const VERSION = (() => {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8"));
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
 
 const USAGE = `cgrca <command> [args] [options]
 
