@@ -63,7 +63,23 @@ cgrca daemon start      # warm queries — sub-50ms on the second hit
 
 Open your editor. Halo's MCP tools are now available to your agent.
 
-CLI demo: `cgrca rca symbol:foo` — ranked causal candidates printed as a table.
+**Run an RCA from the CLI:**
+
+```sh
+cgrca rca symbol:login              # ranked candidates printed as a table
+                                    # sidecar auto-written to ~/.cgrca/repos/
+                                    # UI reloads automatically if open
+```
+
+**Open the visual viewer:**
+
+```sh
+cgrca-view ~/.cgrca/repos           # opens browser at 127.0.0.1:7331
+                                    # switch to the RCA tab — type any symbol,
+                                    # file, or failure description to investigate
+```
+
+No `--persist` flag, no session files to manage, no browser refresh needed. The CLI writes to the daemon's canonical SQLite and notifies the viewer over the bridge.
 
 ## A concrete example
 
@@ -83,7 +99,7 @@ The agent now has the structural evidence to commit to a hypothesis and propose 
 
 **MCP server** — the actual product. Stdio transport, every MCP-aware editor picks it up. `cgrca init` does the wiring.
 
-**CLI** — for scripting, CI, debugging:
+**CLI** — for scripting, CI, debugging. `cgrca rca` uses the daemon's warm index when available, falls back to in-process:
 
 ```sh
 cgrca rca symbol:login                                 # rank a known symbol
@@ -96,15 +112,23 @@ cgrca define UserSession --language python             # find declarations
 cgrca changed handle_login --since 30                  # who touched this lately
 ```
 
+**Visual viewer** (`code-graph-rca-ui`) — three tabs over the same indexed graph:
+
+- **Constellation** — force-directed call graph, causal halos sized by score, recency rings, Monaco source panel on click.
+- **RCA Evidence Board** — live query bar at the top. Type `symbol:X`, `file:src/foo.py`, or a plain description and hit Investigate. Results appear in seconds, no session file needed. Candidates render as 7-signal dossiers with commit history and source excerpts.
+- **Impact Forward Constellation** — blast-radius projection from any symbol: tree view, risk table, file rollup.
+
 **GitHub App + incident webhook** — PR review bot posts ranked candidates as a comment; Sentry / generic webhooks open issues with ranked candidates and a first hypothesis.
 
 ## Architecture
 
-**Scope-then-index.** A bounded BFS over imports + reverse callers picks 5–10k LOC around the failure. A two-pass tree-sitter parser builds an in-memory SQLite (or persisted with `--persist <path>`).
+**Scope-then-index.** A bounded BFS over imports + reverse callers picks 5–10k LOC around the failure. A two-pass tree-sitter parser builds an in-memory SQLite (persisted automatically to `~/.cgrca/repos/` by the daemon).
 
 **Calibrated scorer.** Seven signals — recency, proximity, ambiguity, co-change, subsystem, complexity, dataflow — fit by logistic regression. Tooling in [`tools/calibration/`](tools/calibration/).
 
-**`cgrcad` daemon.** Long-lived process owning one persisted SQLite per repo, keyed by realpath. Blob-sha cache skips re-parsing unchanged files; fs-watcher invalidates on edit. JSON-RPC over a unix socket. Warm queries land in ~30ms.
+**`cgrcad` daemon.** Long-lived process owning one persisted SQLite per repo, keyed by realpath. Blob-sha cache skips re-parsing unchanged files; fs-watcher invalidates on edit. JSON-RPC over a unix socket. Warm queries land in ~30ms. `cgrca rca` tries the daemon first and falls back to in-process if it's down.
+
+**Bridge.** `cgrca-view` writes `~/.cgrca/bridge.json` on start. The CLI reads it after every sidecar write and POSTs to `/api/bridge/rca-notify`, which broadcasts a `rca-updated` WebSocket event to the viewer — the RCA tab reloads without a manual refresh.
 
 **Schema.** Files, symbols (with `body_preview`), edges with confidence, imports, params, arg_bindings, blob_cache. Schema versioning is enforced — newer binary refuses older DBs.
 

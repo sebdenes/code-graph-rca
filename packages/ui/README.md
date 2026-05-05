@@ -2,7 +2,7 @@
 
 *part of [Halo](https://github.com/sebdenes/code-graph-rca)*
 
-**Halo's visual viewer.** Three views over the same indexed knowledge graph: a Constellation force-directed map of the neighborhood, an Evidence Board that lays out Halo's 7-signal causal dossier next to the lit code excerpt, and an Impact Forward Constellation that projects blast-radius outward from any symbol. Built for the moment after Halo's CLI hands you a session — when the agent (or you) wants to see the structural picture, not just read it.
+**Halo's visual viewer.** Three tabs over the same indexed knowledge graph: a Constellation force-directed map of the call graph neighborhood, a live RCA Evidence Board where you type any symbol or failure description and get ranked candidates instantly, and an Impact Forward Constellation that projects blast-radius outward from any symbol.
 
 For Halo's product overview and architecture, see the [repo README](https://github.com/sebdenes/code-graph-rca#readme).
 
@@ -12,44 +12,65 @@ For Halo's product overview and architecture, see the [repo README](https://gith
 npm install -g code-graph-rca-ui
 ```
 
-This pulls `code-graph-rca` (Halo's engine) as a dep, so installing the viewer gets you the full Halo CLI too. Currently v0.4.4.
+This pulls `code-graph-rca` (Halo's engine) as a dep, so installing the viewer gets you the full Halo CLI too.
 
 ## Run
 
 ```sh
-# 1. Generate a session sqlite from a real failure (Halo's CLI):
-cgrca rca symbol:login --repo /path/to/repo --persist /tmp/session.sqlite
-
-# 2. Open Halo's viewer:
-cgrca-view /tmp/session.sqlite          # opens browser at 127.0.0.1:7331
-cgrca-view --port 7331                  # browse ~/.cgrca/sessions
-cgrca-view ./sessions-dir               # browse a directory of sessions
+cgrca daemon start                  # warm the index for your repo
+cgrca-view ~/.cgrca/repos           # opens browser at 127.0.0.1:7331
 ```
 
-`<sqlite-path-or-dir>` accepts either a single `.sqlite` session file or a directory of them. With no path argument, the server lists `~/.cgrca/sessions` plus the current working directory.
+Switch to the **RCA tab** and type a query — no session file needed.
+
+```sh
+cgrca-view /path/to/sessions/       # browse a directory of .sqlite files
+cgrca-view session.sqlite           # open a single session directly
+```
 
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `--port N` | `7331` | Auto-increments through `7340` if busy. |
 | `--no-open` | off | Don't launch the system browser. |
-| `--watch <repo>` | off | Re-index on file change (chokidar). Streams `LiveEvents` over WebSocket. |
+| `--watch <repo>` | off | Re-index on file change. Streams `LiveEvents` over WebSocket. |
 | `--dev` | off | API-only mode (no SPA static serving — for local UI dev). |
 
 ## The three tabs
 
-- **Constellation graph** (default) — Cytoscape-rendered force-directed view. Nodes glow by kind, edges weave faintly, **causal halos** size by score, **recency rings** color by 7d / 30d / 90d. File-scope nebulas (capped at **24 clusters** — past that, the SVG layer hangs the renderer on large repos like a 28k-symbol Python checkout) give a cartographic sense of which subsystem you're in. Smart-labels avoid collision via a per-frame layout pass over the top-N highest-degree files. Click any node to slide in a Monaco source panel.
-- **RCA Evidence Board** — Halo's ranked candidates rendered as radial dossiers: each candidate is a 7-spoke wheel (recency × proximity × ambiguity × co-change × subsystem × complexity × dataflow) with the contributing values lit, the recent commits stacked beside it, and the lit code excerpt rendered on the right. The focused candidate's call-graph neighborhood floats beneath. This is the view you reach for when you need to defend the rank.
-- **Impact Forward Constellation** — forward propagation from any symbol: tree view, hop-grouped graph, ranked-by-risk table, file-blast-radius rollup, and a "high blast radius" banner colored on the risk colormap when a single change reaches a lot of dependents.
+**Constellation** (default) — Cytoscape-rendered force-directed view. Nodes glow by kind, edges weave faintly, **causal halos** size by score, **recency rings** color by 7d / 30d / 90d. File-scope nebulas give a cartographic sense of which subsystem you're in. Click any node to slide in a Monaco source panel.
 
-A file-scope filter lets you collapse the graph to a single file's symbols + their direct neighbors — the right view for "what does this PR's diff actually touch?"
+**RCA Evidence Board** — live query bar at the top. Type any of:
+
+```
+symbol:MyFunction         ranked candidates anchored on that symbol
+file:src/auth.py          rank within a file
+test:tests/test_auth.py   from a failing test path
+any plain text            treated as a stack trace or description
+```
+
+Hit **Investigate** — results appear in a few seconds with no session file, no CLI flag, no restart. Each candidate renders as a 7-signal radial dossier (recency × proximity × ambiguity × co-change × subsystem × complexity × dataflow) with recent commits and a lit code excerpt. The call-graph neighborhood floats in the middle panel.
+
+When `cgrca rca` runs in a terminal, it writes the sidecar and notifies the viewer over the bridge — the RCA tab reloads automatically.
+
+**Impact Forward Constellation** — forward propagation from any symbol: tree view, hop-grouped graph, ranked-by-risk table, file-blast-radius rollup.
 
 ## Bridge mode
 
-Halo's viewer advertises itself to local MCP servers by writing `~/.cgrca/bridge.json` (`{ url, port, pid, sessionsDir }`) on listen and removing it on shutdown. When Halo's MCP server sees that file, the agent can call `cgrca_currentSelection` to read whatever symbol you're focused on in the viewer, or `cgrca_publishSelection` to push the agent's focus back to the graph. The two views stay in sync — useful when an agent is investigating and you want to follow along visually (or vice versa).
+`cgrca-view` writes `~/.cgrca/bridge.json` on start. Three things use it:
+
+- **MCP peers** — `cgrca_currentSelection` reads the symbol focused in the viewer; `cgrca_publishSelection` pushes the agent's focus back to the graph. The two surfaces stay in sync.
+- **CLI auto-reload** — `cgrca rca` reads `bridge.json` after writing a sidecar and POSTs to `/api/bridge/rca-notify`. The viewer receives a `rca-updated` WebSocket event and invalidates the RCA tab — no manual refresh needed.
+- **Bridge WebSocket** (`/api/bridge/live`) — any process can subscribe to selection and RCA-updated events.
+
+## Session discovery
+
+`cgrca-view` loads `.sqlite` files from the path you pass (or `~/.cgrca/repos` by default). Each file is a persisted Halo session keyed by repo realpath. The daemon creates and maintains these automatically — you rarely need to manage them directly.
+
+A `.rca.json` sidecar next to a session file pre-loads the last RCA run into the Evidence Board on tab open. The live query bar works regardless of whether a sidecar exists.
 
 ## Status
 
-Tracks Halo engine releases; designed to open any sqlite produced by `cgrca rca --persist` (schema v6).
+Tracks Halo engine releases. `code-graph-rca@1.0.2` / `code-graph-rca-ui@1.0.4`.
 
 ## License
 
