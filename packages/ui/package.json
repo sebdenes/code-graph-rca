@@ -50,7 +50,7 @@
     "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
-    "code-graph-rca": "^0.4.1",
+    "code-graph-rca": "^1.0.2",
     "@fastify/static": "^9.1.3",
     "@fastify/websocket": "^11.0.0",
     "better-sqlite3": "^11.3.0",
