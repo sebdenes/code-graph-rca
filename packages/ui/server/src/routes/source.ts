@@ -45,10 +45,21 @@ export function registerSourceRoute(
         return undefined;
       }
       const sub = req.params["*"];
-      const abs = resolveSandboxed(rec.repoRoot, sub);
+      let abs = resolveSandboxed(rec.repoRoot, sub);
       if (!abs) {
         reply.code(400).send({ error: "invalid path" });
         return undefined;
+      }
+      // If the direct path misses, try stripping the first path component.
+      // This handles the case where a file was indexed from a parent directory
+      // (e.g. "athlai/core/config.py" from root, but repoRoot is already "…/athlai").
+      if (!existsSync(abs)) {
+        const parts = sub.split("/");
+        if (parts.length > 1) {
+          const stripped = parts.slice(1).join("/");
+          const fallback = resolveSandboxed(rec.repoRoot, stripped);
+          if (fallback && existsSync(fallback)) abs = fallback;
+        }
       }
       if (!existsSync(abs)) {
         reply.code(404).send({ error: "file not found" });

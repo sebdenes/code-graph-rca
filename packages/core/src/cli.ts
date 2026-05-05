@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
+import { resolve, dirname, join, basename as pathBasename } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { runRca, type FailureScope } from "./rca/runner.js";
@@ -349,33 +349,60 @@ async function cmdRca(args: ParsedArgs): Promise<number> {
   const wantsPrompt = args.flags.prompt === true || formatFlag === "prompt";
   const wantsJson = args.flags.json === true || formatFlag === "json";
 
-  // Skip prompt-formatting on the default (table) path — the runner builds a
-  // multi-section markdown blob we'd otherwise discard. JSON consumers keep
-  // the prompt populated for backward-compat: pre-week-6 callers serialized
-  // the whole RcaResult and depended on `prompt` being non-empty.
-  const result = await runRca({
-    failureScope: failure,
+  // Canonical daemon session path — written to whether we use the daemon or
+  // fall back to in-process, so the UI always picks up the sidecar.
+  const { repoDbPath } = await import("./daemon/state.js");
+  const canonicalSqlite = repoDbPath(repoRoot);
+
+  // Try the daemon first (warm path: reuses its in-memory index + git cache).
+  // Falls back to in-process if daemon is down or --no-daemon was passed.
+  let result = await tryDaemon<import("./rca/runner.js").RcaResult>(args, "rca", {
     repoRoot,
+    failure,
     budget,
-    format: wantsPrompt || wantsJson ? "prompt" : "structured",
-    ...(persist ? { persist } : {}),
-    ...(topN !== undefined && Number.isFinite(topN) ? { topN } : {}),
-    ...(useLegacyWeights ? { useLegacyWeights: true } : {}),
   });
+
+  if (!result) {
+    result = await runRca({
+      failureScope: failure,
+      repoRoot,
+      budget,
+      format: wantsPrompt || wantsJson ? "prompt" : "structured",
+      persist: persist ?? canonicalSqlite,
+      ...(topN !== undefined && Number.isFinite(topN) ? { topN } : {}),
+      ...(useLegacyWeights ? { useLegacyWeights: true } : {}),
+    });
+  }
+
+  // Always write the sidecar next to the canonical daemon SQLite so the UI
+  // picks it up without a --persist flag or server restart.
+  const sidecarBase = persist ? resolve(persist) : canonicalSqlite;
+  try {
+    writeFileSync(`${sidecarBase}.rca.json`, JSON.stringify(result, null, 2));
+    process.stderr.write(`sidecar written to ${sidecarBase}.rca.json\n`);
+  } catch (err) {
+    process.stderr.write(
+      `warning: failed to write sidecar json: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+  // Notify the UI to reload — best-effort, fire-and-forget.
+  try {
+    const { REPOS_DIR } = await import("./daemon/state.js");
+    const bridgePath = join(dirname(REPOS_DIR), "bridge.json");
+    if (existsSync(bridgePath)) {
+      const bridge = JSON.parse(readFileSync(bridgePath, "utf8")) as { url: string };
+      const sessionId = pathBasename(sidecarBase, ".sqlite");
+      fetch(`${bridge.url}/api/bridge/rca-notify`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      }).catch(() => { /* ignore if UI is not running */ });
+    }
+  } catch { /* non-fatal */ }
+  // Stamp the SQLite with repo_root + primary_symbol for standalone portability.
   if (persist) {
     const persistAbs = resolve(persist);
     process.stderr.write(`graph persisted to ${persistAbs}\n`);
-    // Sidecar JSON snapshot of the full RcaResult (lets the UI render any
-    // sqlite without re-running the CLI).
-    try {
-      writeFileSync(`${persistAbs}.rca.json`, JSON.stringify(result, null, 2));
-    } catch (err) {
-      process.stderr.write(
-        `warning: failed to write sidecar json: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    }
-    // Stamp the SQLite with repo_root + primary_symbol so it can be opened
-    // standalone on another machine.
     try {
       const stampDb = new Database(persistAbs);
       stampDb.exec(

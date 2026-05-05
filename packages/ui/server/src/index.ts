@@ -86,7 +86,7 @@ export async function createServer(
   registerDiffRoute(fastify, sessions);
   registerImpactRoute(fastify, sessions);
   registerGraphRoute(fastify, sessions);
-  registerBridgeRoute(fastify);
+  registerBridgeRoute(fastify, broadcaster);
 
   if (!opts.dev) {
     await registerStatic(fastify);

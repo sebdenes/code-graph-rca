@@ -1,20 +1,22 @@
 /**
  * RCA · Evidence Board view.
  *
- * Layout: 3-column grid (360 dossiers / 1fr graph / 380 inspector) + a
+ * Layout: query bar / 3-column grid (360 dossiers / 1fr graph / 380 inspector) + a
  * 36px bottom 7-signal legend bar. The cosmic styling lives in `rca.css`;
  * the AppShell still owns the actual top bar (Halo wordmark + Graph/RCA/
  * Impact tabs + session HUD), so we don't duplicate it here.
  *
- * Data flow is unchanged from the previous version:
- *   1. `api.rca(sessionId)` for the snapshot (anchor + ranked candidates).
+ * Data flow:
+ *   1. User types a failure description in the query bar and submits →
+ *      POST /api/session/:id/rca for live RCA result (no sidecar needed).
+ *      Falls back to GET snapshot if the session has one and no query yet.
  *   2. `callersOf(name, depth=2)` and `calleesOf(name, depth=1)` for the
  *      neighborhood feeding the middle graph.
  *   3. The clicked dossier writes the selection into the zustand session
  *      store, which the side panel then reads to load source + commits.
  */
-import { useMemo } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useMemo, useState, useRef, useEffect, type FormEvent } from "react";
+import { useQueries, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { CallerTree, CalleeTree, CausalCandidate } from "code-graph-rca";
 import { api } from "../../api/client.ts";
 import { useSession } from "../../state/session.ts";
@@ -25,18 +27,78 @@ import { buildElements } from "../../components/graph/build-elements.ts";
 import { SIGNAL_COLORS, SIGNAL_LABELS } from "./signal-radial.tsx";
 import "./rca.css";
 
+function parseQuery(raw: string) {
+  const s = raw.trim();
+  if (s.startsWith("symbol:")) return { kind: "symbol" as const, name: s.slice(7).trim() };
+  if (s.startsWith("file:"))   return { kind: "file"   as const, path: s.slice(5).trim() };
+  if (s.startsWith("test:"))   return { kind: "failing-test" as const, path: s.slice(5).trim() };
+  // plain text treated as a stack trace / prose description
+  return { kind: "stack-trace" as const, text: s };
+}
+
 export function RcaView({ sessionId }: { sessionId: string }) {
   const selectedSymbol = useSession((s) => s.selectedSymbol);
   const selectSymbol = useSession((s) => s.selectSymbol);
   const scoreThreshold = useSession((s) => s.scoreThreshold);
   const subsystem = useSession((s) => s.subsystem);
+  const queryClient = useQueryClient();
 
-  const rcaQ = useQuery({
-    queryKey: ["rca", sessionId],
-    queryFn: () => api.rca(sessionId),
+  const [queryText, setQueryText] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Listen for rca-updated events from the session WebSocket so the snapshot
+  // refreshes automatically after `cgrca rca` writes a new sidecar.
+  useEffect(() => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${window.location.host}/api/session/${sessionId}/live`);
+    ws.onmessage = (msg) => {
+      try {
+        const evt = JSON.parse(msg.data as string) as { kind: string };
+        if (evt.kind === "rca-updated") {
+          queryClient.invalidateQueries({ queryKey: ["rca-snapshot", sessionId] });
+          queryClient.invalidateQueries({ queryKey: ["rca", sessionId] });
+        }
+      } catch { /* ignore */ }
+    };
+    return () => { ws.close(); };
+  }, [sessionId, queryClient]);
+
+  // Live mutation — fires when user submits the query bar
+  const rcaMutation = useMutation({
+    mutationFn: (text: string) => {
+      const failure = parseQuery(text);
+      return api.rcaQuery(sessionId, { failure });
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["rca", sessionId], data);
+      selectSymbol(null); // clear stale side-panel selection from previous RCA
+    },
   });
 
-  const primary = rcaQ.data?.primarySymbol ?? null;
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (queryText.trim()) rcaMutation.mutate(queryText);
+  };
+
+  // Snapshot fallback — only used before the first live query
+  const snapshotQ = useQuery({
+    queryKey: ["rca-snapshot", sessionId],
+    queryFn: () => api.rca(sessionId),
+    retry: false,
+  });
+
+  // Active data: live result wins over snapshot
+  const rcaData = useQuery({
+    queryKey: ["rca", sessionId],
+    queryFn: () => Promise.resolve(null), // populated by mutation
+    enabled: false,                        // never auto-fetches
+    initialData: undefined,
+  }).data ?? snapshotQ.data ?? null;
+
+  const isPending = rcaMutation.isPending || (snapshotQ.isPending && !rcaData);
+  const error = rcaMutation.error ?? (snapshotQ.error && !rcaData ? snapshotQ.error : null);
+
+  const primary = rcaData?.primarySymbol ?? null;
 
   const neighborhoodQs = useQueries({
     queries: [
@@ -64,38 +126,70 @@ export function RcaView({ sessionId }: { sessionId: string }) {
     calleesQ.data && calleesQ.data.name === "calleesOf" ? calleesQ.data.result : null;
 
   const elements = useMemo(() => {
-    if (!rcaQ.data) return [];
-    return buildElements(rcaQ.data, callers, callees);
-  }, [rcaQ.data, callers, callees]);
+    if (!rcaData) return [];
+    return buildElements(rcaData, callers, callees);
+  }, [rcaData, callers, callees]);
 
   const selectedCandidate: CausalCandidate | null = useMemo(() => {
-    if (!rcaQ.data || !selectedSymbol) return null;
+    if (!rcaData || !selectedSymbol) return null;
     return (
-      rcaQ.data.causalCandidates.find(
+      rcaData.causalCandidates.find(
         (c) => c.name === selectedSymbol.name && (c.file ?? null) === (selectedSymbol.file ?? null),
       ) ?? null
     );
-  }, [rcaQ.data, selectedSymbol]);
+  }, [rcaData, selectedSymbol]);
 
   // ----- Loading / error / empty states (cosmic-styled) -----
-  if (rcaQ.isPending) {
-    return <div className="rca-state">Loading the evidence board…</div>;
-  }
-  if (rcaQ.error) {
+  const queryBar = (
+    <form className="rca-query-bar" onSubmit={handleSubmit}>
+      <input
+        ref={inputRef}
+        className="rca-query-input"
+        value={queryText}
+        onChange={(e) => setQueryText(e.target.value)}
+        placeholder="symbol:MyFunction  ·  file:src/foo.py  ·  or describe the failure…"
+        disabled={rcaMutation.isPending}
+      />
+      <button className="rca-query-btn" type="submit" disabled={rcaMutation.isPending || !queryText.trim()}>
+        {rcaMutation.isPending ? "Running…" : "Investigate"}
+      </button>
+    </form>
+  );
+
+  if (isPending) {
     return (
-      <div className="rca-state error">
-        Failed to load RCA — {String(rcaQ.error)}
-      </div>
+      <>
+        {queryBar}
+        <div className="rca-state">Loading the evidence board…</div>
+      </>
     );
   }
-  if (!rcaQ.data) {
-    return <div className="rca-state">No RCA snapshot available.</div>;
+  if (error) {
+    return (
+      <>
+        {queryBar}
+        <div className="rca-state error">
+          Failed to load RCA — {String(error)}
+        </div>
+      </>
+    );
+  }
+  if (!rcaData) {
+    return (
+      <>
+        {queryBar}
+        <div className="rca-state">
+          Enter a symbol, file, or failure description above to start an investigation.
+        </div>
+      </>
+    );
   }
 
-  const rca = rcaQ.data;
+  const rca = rcaData;
 
   return (
     <div className="rca-stage">
+      {queryBar}
       <CandidatesPanel
         candidates={rca.causalCandidates}
         selectedSymbol={selectedSymbol}

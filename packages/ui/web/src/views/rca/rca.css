@@ -30,10 +30,11 @@
 
   position: relative;
   display: grid;
-  grid-template-rows: 1fr 36px;
+  grid-template-rows: 44px 1fr 36px;
   grid-template-columns: 360px 1fr 380px;
   grid-template-areas:
-    "left middle right"
+    "query  query  query"
+    "left   middle right"
     "bottom bottom bottom";
   height: 100%;
   width: 100%;
@@ -517,6 +518,63 @@
 }
 
 /* ---------- loading + empty states ---------- */
+
+/* ── Query bar ─────────────────────────────────────────────── */
+.rca-query-bar {
+  grid-area: query;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--rule);
+  background: rgba(12, 19, 37, 0.85);
+  backdrop-filter: blur(4px);
+  z-index: 10;
+}
+
+.rca-query-input {
+  flex: 1;
+  height: 28px;
+  padding: 0 10px;
+  background: rgba(245, 245, 245, 0.06);
+  border: 1px solid rgba(245, 245, 245, 0.12);
+  border-radius: 4px;
+  color: var(--ink);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+  outline: none;
+}
+
+.rca-query-input::placeholder {
+  color: var(--ink-ghost);
+}
+
+.rca-query-input:focus {
+  border-color: rgba(122, 168, 255, 0.5);
+  background: rgba(245, 245, 245, 0.09);
+}
+
+.rca-query-btn {
+  height: 28px;
+  padding: 0 14px;
+  background: rgba(122, 168, 255, 0.15);
+  border: 1px solid rgba(122, 168, 255, 0.35);
+  border-radius: 4px;
+  color: var(--node-fn);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.rca-query-btn:hover:not(:disabled) {
+  background: rgba(122, 168, 255, 0.25);
+}
+
+.rca-query-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 
 .rca-state {
   display: flex;

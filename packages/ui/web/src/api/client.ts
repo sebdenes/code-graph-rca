@@ -6,6 +6,7 @@ import type {
   ImpactResponse,
   QueryRequest,
   QueryResponse,
+  RcaQuery,
   RcaSnapshot,
   SessionsResponse,
   SourceResponse,
@@ -31,6 +32,15 @@ export const api = {
   },
   async rca(sessionId: string): Promise<RcaSnapshot> {
     return j(await fetch(`${BASE}/session/${encodeURIComponent(sessionId)}/rca`));
+  },
+  async rcaQuery(sessionId: string, body: RcaQuery): Promise<RcaSnapshot> {
+    return j(
+      await fetch(`${BASE}/session/${encodeURIComponent(sessionId)}/rca`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
   },
   async query(sessionId: string, body: QueryRequest): Promise<QueryResponse> {
     return j(

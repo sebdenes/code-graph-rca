@@ -41,7 +41,10 @@ function isSelection(v: unknown): v is BridgeSelection {
   return true;
 }
 
-export function registerBridgeRoute(fastify: FastifyInstance): BridgeState {
+export function registerBridgeRoute(
+  fastify: FastifyInstance,
+  sessionBroadcast?: (id: string, event: LiveEvent) => void,
+): BridgeState {
   const state: BridgeState = { current: null };
   const subscribers = new Set<WebSocket>();
 
@@ -98,6 +101,18 @@ export function registerBridgeRoute(fastify: FastifyInstance): BridgeState {
       });
     },
   );
+
+  // CLI calls this after writing a sidecar so the UI reloads without a refresh.
+  fastify.post("/api/bridge/rca-notify", async (req, reply) => {
+    const body = req.body as { sessionId?: string } | null;
+    const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+    if (sessionId && sessionBroadcast) {
+      sessionBroadcast(sessionId, { kind: "rca-updated" });
+    }
+    // Also ping bridge WebSocket subscribers (e.g. MCP peers).
+    broadcast({ kind: "rca-updated" });
+    return reply.send({ ok: true });
+  });
 
   return state;
 }

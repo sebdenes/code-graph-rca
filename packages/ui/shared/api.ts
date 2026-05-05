@@ -39,6 +39,22 @@ export interface RcaSnapshot {
   notes: string[];
 }
 
+export interface RcaQuery {
+  failure: {
+    kind: "symbol" | "file" | "stack-trace" | "failing-test";
+    /** symbol name, file path, or stack trace text */
+    text?: string;
+    /** for kind=symbol */
+    name?: string;
+    /** optional file disambiguator for kind=symbol */
+    file?: string;
+    /** for kind=file or kind=failing-test */
+    path?: string;
+    testName?: string;
+  };
+  budget?: { maxFiles?: number; maxLoc?: number; maxDepth?: number };
+}
+
 export type QueryName = "definitionOf" | "callersOf" | "calleesOf" | "symbolsInFile" | "recentlyChangedNear";
 
 export interface QueryRequest {
@@ -164,4 +180,5 @@ export type LiveEvent =
   | { kind: "reindex-start"; reason: string }
   | { kind: "reindex-done"; durationMs: number; symbolCount: number; edgeCount: number }
   | { kind: "file-changed"; path: string }
-  | { kind: "select"; payload: { name: string; file: string; line: number } | null };
+  | { kind: "select"; payload: { name: string; file: string; line: number } | null }
+  | { kind: "rca-updated" };
