@@ -44,7 +44,7 @@
     "@octokit/app": "^16.1.2",
     "@octokit/rest": "^22.0.1",
     "@octokit/webhooks": "^14.2.0",
-    "code-graph-rca": "^0.4.4",
+    "code-graph-rca": "^1.0.2",
     "fastify": "^5.0.0"
   },
   "devDependencies": {
